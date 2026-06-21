@@ -168,7 +168,7 @@ class MT5Integration:
             return {"status": "ERROR", "message": f"ไม่พบข้อมูลคู่เงิน {symbol} บน MT5"}
             
         digits = sym_info.digits
-        tick_size = sym_info.tick_size
+        tick_size = sym_info.trade_tick_size
         stops_level = sym_info.trade_stops_level
         point = sym_info.point
         
@@ -277,7 +277,7 @@ class MT5Integration:
         # ปัดราคาปิดออเดอร์ให้ตรงทศนิยมของโบรกเกอร์
         sym_info = mt5.symbol_info(symbol)
         if sym_info:
-            execution_price = round(round(execution_price / sym_info.tick_size) * sym_info.tick_size, sym_info.digits)
+            execution_price = round(round(execution_price / sym_info.trade_tick_size) * sym_info.trade_tick_size, sym_info.digits)
             
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -319,7 +319,7 @@ class MT5Integration:
         
         if sym_info:
             digits = sym_info.digits
-            tick_size = sym_info.tick_size
+            tick_size = sym_info.trade_tick_size
             if new_sl is not None:
                 final_sl = round(round(float(new_sl) / tick_size) * tick_size, digits)
             if new_tp is not None:
