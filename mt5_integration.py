@@ -162,48 +162,79 @@ class MT5Integration:
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
+        # ดึงราคาและข้อมูลของโบรกเกอร์เกี่ยวกับสัญลักษณ์
+        sym_info = mt5.symbol_info(symbol)
+        if not sym_info:
+            return {"status": "ERROR", "message": f"ไม่พบข้อมูลคู่เงิน {symbol} บน MT5"}
+            
+        digits = sym_info.digits
+        tick_size = sym_info.tick_size
+        stops_level = sym_info.trade_stops_level
+        point = sym_info.point
+        
         price_info = self.get_current_price(symbol)
         if not price_info:
             return {"status": "ERROR", "message": "ไม่สามารถอ่านราคาปัจจุบันได้"}
             
-        current_price = price_info["price"]
+        bid_price = price_info["bid"]
+        ask_price = price_info["ask"]
         
-        # ตรวจสอบการสร้าง Pending Order (หากราคาเข้าที่ AI ขอ ห่างจากราคาปัจจุบันเกินเกณฑ์)
-        # โดยเราตั้งเกณฑ์ตรวจสอบความเบี่ยงเบนไว้ที่ $1.50 USD
-        DEVIATION_LIMIT = 1.50
+        # ปรับทศนิยมตัวแปร SL และ TP ให้สอดคล้องกับโบรกเกอร์
+        final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
+        final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
+        
+        # คำนวณระยะห่างขั้นต่ำตาม Stops Level เพื่อความปลอดภัยในการตั้ง Pending Order
+        min_stop_distance = stops_level * point
+        
+        # กำหนด Deviation Limit ตามประเภทสินทรัพย์ (Bitcoin ผันผวนสูงและราคาสูงกว่าทองมาก)
+        if "BTC" in symbol.upper():
+            deviation_limit = max(min_stop_distance * 1.5, 50.0)
+        else:
+            deviation_limit = max(min_stop_distance * 1.5, 1.50)
+            
         is_pending = False
         order_type = None
-        target_price = current_price
+        target_price = None
         
-        if entry is not None and abs(float(entry) - current_price) > DEVIATION_LIMIT:
-            is_pending = True
-            target_price = float(entry)
-            if direction == "BUY":
-                if target_price < current_price:
-                    order_type = mt5.ORDER_TYPE_BUY_LIMIT  # ซื้อที่ราคาต่ำกว่าตลาด
-                    logging.info(f"ราคาเสนอซื้อ ({target_price}) ต่ำกว่าราคาตลาด ({current_price}): เลือกใช้ BUY LIMIT")
-                else:
-                    order_type = mt5.ORDER_TYPE_BUY_STOP   # ซื้อเมื่อราคาทะลุแนวต้านขึ้นไป
-                    logging.info(f"ราคาเสนอซื้อ ({target_price}) สูงกว่าราคาตลาด ({current_price}): เลือกใช้ BUY STOP")
-            else: # SELL
-                if target_price > current_price:
-                    order_type = mt5.ORDER_TYPE_SELL_LIMIT # ขายที่ราคาสูงกว่าตลาด
-                    logging.info(f"ราคาเสนอขาย ({target_price}) สูงกว่าราคาตลาด ({current_price}): เลือกใช้ SELL LIMIT")
-                else:
-                    order_type = mt5.ORDER_TYPE_SELL_STOP  # ขายเมื่อราคาทะลุแนวรับลงไป
-                    logging.info(f"ราคาเสนอขาย ({target_price}) ต่ำกว่าราคาตลาด ({current_price}): เลือกใช้ SELL STOP")
-        else:
+        if entry is not None:
+            entry_val = float(entry)
+            market_compare_price = ask_price if direction == "BUY" else bid_price
+            
+            # ถ้าราคาเข้าที่เสนอมา ห่างจากราคาตลาดปัจจุบันเกิน Deviation Limit ให้ตั้งเป็น Pending Order
+            if abs(entry_val - market_compare_price) > deviation_limit:
+                is_pending = True
+                target_price = round(round(entry_val / tick_size) * tick_size, digits)
+                
+                if direction == "BUY":
+                    if target_price < ask_price:
+                        order_type = mt5.ORDER_TYPE_BUY_LIMIT  # ซื้อราคาต่ำกว่าตลาด
+                        logging.info(f"ราคาเสนอซื้อ ({target_price}) ต่ำกว่าราคาตลาด Ask ({ask_price}): เลือกใช้ BUY LIMIT")
+                    else:
+                        order_type = mt5.ORDER_TYPE_BUY_STOP   # ซื้อราคาสูงกว่าตลาด (Breakout)
+                        logging.info(f"ราคาเสนอซื้อ ({target_price}) สูงกว่าราคาตลาด Ask ({ask_price}): เลือกใช้ BUY STOP")
+                else:  # SELL
+                    if target_price > bid_price:
+                        order_type = mt5.ORDER_TYPE_SELL_LIMIT # ขายราคาสูงกว่าตลาด
+                        logging.info(f"ราคาเสนอขาย ({target_price}) สูงกว่าราคาตลาด Bid ({bid_price}): เลือกใช้ SELL LIMIT")
+                    else:
+                        order_type = mt5.ORDER_TYPE_SELL_STOP  # ขายราคาต่ำกว่าตลาด (Breakout)
+                        logging.info(f"ราคาเสนอขาย ({target_price}) ต่ำกว่าราคาตลาด Bid ({bid_price}): เลือกใช้ SELL STOP")
+            else:
+                logging.info(f"ราคาเสนอเข้า ({entry_val}) ใกล้เคียงราคาตลาดปัจจุบัน (ห่างไม่เกิน {deviation_limit:.2f}): สลับมาเข้าตลาดทันที (Market Order)")
+                
+        if not is_pending:
             # เปิดออเดอร์ทันที (Market Order)
             order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
-            target_price = price_info["ask"] if direction == "BUY" else price_info["bid"]
+            target_price = ask_price if direction == "BUY" else bid_price
+            target_price = round(round(target_price / tick_size) * tick_size, digits)
             
         request = {
             "symbol": symbol,
             "volume": float(lot),
             "type": order_type,
             "price": target_price,
-            "sl": float(sl) if sl else 0.0,
-            "tp": float(tp) if tp else 0.0,
+            "sl": final_sl,
+            "tp": final_tp,
             "deviation": 20,
             "magic": 123456,
             "comment": "LLM Auto Trade",
@@ -243,6 +274,11 @@ class MT5Integration:
         execution_price = price_info["bid"] if direction == "BUY" else price_info["ask"]
         order_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
         
+        # ปัดราคาปิดออเดอร์ให้ตรงทศนิยมของโบรกเกอร์
+        sym_info = mt5.symbol_info(symbol)
+        if sym_info:
+            execution_price = round(round(execution_price / sym_info.tick_size) * sym_info.tick_size, sym_info.digits)
+            
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -275,9 +311,25 @@ class MT5Integration:
             return {"status": "ERROR", "message": "ไม่พบออเดอร์ในระบบ"}
             
         pos = positions[0]
-        final_sl = float(new_sl) if new_sl is not None else pos.sl
-        final_tp = float(new_tp) if new_tp is not None else pos.tp
+        symbol = pos.symbol
+        sym_info = mt5.symbol_info(symbol)
         
+        final_sl = pos.sl
+        final_tp = pos.tp
+        
+        if sym_info:
+            digits = sym_info.digits
+            tick_size = sym_info.tick_size
+            if new_sl is not None:
+                final_sl = round(round(float(new_sl) / tick_size) * tick_size, digits)
+            if new_tp is not None:
+                final_tp = round(round(float(new_tp) / tick_size) * tick_size, digits)
+        else:
+            if new_sl is not None:
+                final_sl = float(new_sl)
+            if new_tp is not None:
+                final_tp = float(new_tp)
+                
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": ticket,
