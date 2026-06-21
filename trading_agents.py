@@ -26,7 +26,8 @@ class TradingAgents:
         models_to_try = [model] + fallbacks
         
         for idx, current_model in enumerate(models_to_try):
-            is_claude = "claude" in current_model.lower()
+            # ตรวจสอบชื่อแบรนด์โมเดล (รวมคำคีย์เวิร์ดของ Claude: claude, haiku, sonnet, opus)
+            is_claude = any(keyword in current_model.lower() for keyword in ["claude", "haiku", "sonnet", "opus"])
             
             if is_claude:
                 # 📌 ใช้ Anthropic Messages API (/v1/messages)
@@ -123,10 +124,9 @@ class TradingAgents:
     def analyze_market(self, market_data_str, balance, symbol="XAUUSD", leverage=100.0):
         """
         Agent ตัวที่ 1: Analyst Agent (วิเคราะห์ตลาดและเสนอแผนเข้าออเดอร์)
-        - model: claude-sonnet-4-6 (หรือใช้ gpt-5.5 ตามต้องการ)
+        - model: sonnet-4-5 (หรือ gpt-5.5)
         """
-        # ตั้งค่าโมเดลวิเคราะห์
-        model = "claude-sonnet-4-6" 
+        model = "sonnet-4-5" 
         
         system_prompt = f"""คุณคือ AI Technical Analyst & Risk Manager ผู้เชี่ยวชาญการเทรด {symbol}
 หน้าที่ของคุณคือวิเคราะห์ข้อมูลตลาดล่าสุด และเสนอการเปิดออเดอร์ที่มีความเสี่ยงต่ำ
@@ -155,15 +155,14 @@ class TradingAgents:
         ]
         
         logging.info(f"ส่งข้อมูลให้ Analyst Agent วิเคราะห์โอกาสเข้าเทรด {symbol}...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-4o", "claude-haiku-4-5"])
+        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-5.5", "haiku"])
 
     def manage_position(self, position_details, current_price, balance, symbol="XAUUSD"):
         """
         Agent ตัวที่ 2: Manager Agent (วิเคราะห์และควบคุมความเสี่ยงของออเดอร์ที่ค้างอยู่)
-        - model: claude-haiku-4-5 (หรือใช้ gpt-5.4-mini) เพื่อความรวดเร็วและประหยัด
+        - model: haiku (หรือ gpt-5.4-mini) เพื่อความรวดเร็วและประหยัด
         """
-        # ตั้งค่าโมเดลสปีดเร็ว
-        model = "claude-haiku-4-5"
+        model = "haiku"
         
         system_prompt = f"""คุณคือ Risk Manager หน้าที่ของคุณคือควบคุมความเสี่ยงของออเดอร์ {symbol} ที่เปิดอยู่
 วิเคราะห์ระดับราคาปัจจุบันเทียบกับออเดอร์ที่คุณถืออยู่ เพื่อตัดสินใจว่าจะทำอย่างไรกับออเดอร์นี้
@@ -196,4 +195,4 @@ class TradingAgents:
         ]
         
         logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol}...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-4o-mini", "claude-sonnet-4-6"])
+        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-5.4-mini", "sonnet-4-5"])
