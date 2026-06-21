@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+from datetime import datetime, timezone
 from exchange_sim import MockExchange
 from data_feed import GoldDataFeed
 from trading_agents import TradingAgents
@@ -19,14 +20,32 @@ class TradingBotOrchestrator:
         self.data_feed = GoldDataFeed()
         # 3. โหลดโมดูล Agent
         self.agents = TradingAgents(api_key=api_key)
+        self.symbol = "XAUUSD"
+
+    def is_gold_market_open(self):
+        """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดเสาร์-อาทิตย์หรือไม่ (อิงเวลา UTC)"""
+        now_utc = datetime.now(timezone.utc)
+        day = now_utc.weekday()  # 0 = Monday, ..., 6 = Sunday
+        hour = now_utc.hour
         
+        # ปิดวันเสาร์ (5) และวันอาทิตย์ (6) ทั้งวัน
+        if day in [5, 6]:
+            return False
+        # ปิดวันศุกส์ (4) หลัง 21:00 UTC (ประมาณตี 4 วันเสาร์เวลาไทย)
+        if day == 4 and hour >= 21:
+            return False
+        # ปิดวันจันทร์ (0) ก่อน 00:00 UTC
+        if day == 0 and hour < 0:
+            return False
+        return True
+
     def _prepare_market_summary(self, df):
         """แปลงตารางข้อมูลราคาและอินดิเคเตอร์ให้เป็นข้อความสรุปเพื่อให้ AI เข้าใจง่าย"""
         if df.empty:
-            return "ไม่สามารถโหลดข้อมูลราคาล่าสุดได้"
+            return f"ไม่สามารถโหลดข้อมูลราคาล่าสุดสำหรับ {self.symbol} ได้"
             
         last_row = df.iloc[-1]
-        summary = f"ราคาทองล่าสุด (XAUUSD close proxy): {last_row['close']:.2f} USD\n"
+        summary = f"ราคาล่าสุดสำหรับ {self.symbol}: {last_row['close']:.2f} USD\n"
         summary += f"จุดสูงสุด (High): {last_row['high']:.2f} | จุดต่ำสุด (Low): {last_row['low']:.2f}\n"
         
         # คำนวณ Simple Moving Averages สั้นๆ เพื่อป้อนเพิ่มให้ AI (เช่น SMA 10 และ SMA 30)
@@ -55,18 +74,32 @@ class TradingBotOrchestrator:
         """
         logging.info("=== เริ่มต้นรอบการทำงาน (New Trading Cycle) ===")
         
-        # 1. ดึงราคาทองตลาดจริงล่าสุด
+        # 1. ตรวจสอบสถานะตลาดทองคำ (XAUUSD) เพื่อปรับเปลี่ยนสินทรัพย์
+        if self.is_gold_market_open():
+            self.symbol = "XAUUSD"
+            self.data_feed.symbol = "GC=F"
+            self.data_feed.url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+            self.exchange.contract_size = 100.0  # ทองคำ 1 lot = 100 ounces
+            logging.info("ตลาดทองคำเปิดทำการ เลือกเทรดสินทรัพย์หลัก: XAUUSD")
+        else:
+            self.symbol = "BTCUSD"
+            self.data_feed.symbol = "BTC-USD"
+            self.data_feed.url = "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD"
+            self.exchange.contract_size = 1.0   # Bitcoin 1 lot = 1 BTC
+            logging.info("ตลาดทองคำปิดทำการ (ช่วงวันหยุดเสาร์-อาทิตย์) สลับมาเทรดสินทรัพย์สำรอง: BTCUSD (Bitcoin)")
+
+        # 2. ดึงราคาตลาดจริงล่าสุด
         current_price = self.data_feed.get_current_price()
         if not current_price:
-            logging.error("ไม่สามารถตรวจสอบราคาตลาดปัจจุบันได้ ข้ามรอบการทำงานนี้")
+            logging.error(f"ไม่สามารถตรวจสอบราคาตลาดปัจจุบันสำหรับ {self.symbol} ได้ ข้ามรอบการทำงานนี้")
             return
             
         self.exchange.update_price(current_price)
         status = self.exchange.get_status()
         
-        logging.info(f"ราคาตลาดปัจจุบัน: {current_price} USD | Equity: ${status['equity']:.2f} | Balance: ${status['balance']:.2f}")
+        logging.info(f"ราคาตลาดปัจจุบันสำหรับ {self.symbol}: {current_price} USD | Equity: ${status['equity']:.2f} | Balance: ${status['balance']:.2f}")
         
-        # 2. ตรวจสอบสถานะพอร์ต
+        # 3. ตรวจสอบสถานะพอร์ต
         open_positions = status['open_positions']
         
         if not open_positions:
@@ -83,6 +116,7 @@ class TradingBotOrchestrator:
             decision = self.agents.analyze_market(
                 market_data_str=market_summary,
                 balance=self.exchange.balance,
+                symbol=self.symbol,
                 leverage=self.exchange.leverage
             )
             
@@ -120,7 +154,8 @@ class TradingBotOrchestrator:
                 decision = self.agents.manage_position(
                     position_details=pos,
                     current_price=current_price,
-                    balance=self.exchange.balance
+                    balance=self.exchange.balance,
+                    symbol=self.symbol
                 )
                 
                 if not decision:

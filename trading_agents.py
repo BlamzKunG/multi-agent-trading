@@ -44,7 +44,7 @@ class TradingAgents:
             logging.error(f"เกิดข้อผิดพลาดในการเรียกใช้ LLM ({model}): {e}")
             return None
 
-    def analyze_market(self, market_data_str, balance, leverage=100.0):
+    def analyze_market(self, market_data_str, balance, symbol="XAUUSD", leverage=100.0):
         """
         Agent ตัวที่ 1: Analyst Agent (วิเคราะห์ตลาดและเสนอแผนเข้าออเดอร์)
         - model: claude-sonnet-4-6 (หรือใช้ gpt-5.5 ตามต้องการ)
@@ -52,7 +52,7 @@ class TradingAgents:
         # ตั้งค่าโมเดลวิเคราะห์
         model = "claude-sonnet-4-6" 
         
-        system_prompt = f"""คุณคือ AI Technical Analyst & Risk Manager ผู้เชี่ยวชาญการเทรด XAUUSD (ทองคำ)
+        system_prompt = f"""คุณคือ AI Technical Analyst & Risk Manager ผู้เชี่ยวชาญการเทรด {symbol}
 หน้าที่ของคุณคือวิเคราะห์ข้อมูลตลาดล่าสุด และเสนอการเปิดออเดอร์ที่มีความเสี่ยงต่ำ
 
 กฎเหล็กด้านการเงิน (Risk Rules):
@@ -75,13 +75,13 @@ class TradingAgents:
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"วิเคราะห์ข้อมูลตลาด XAUUSD ล่าสุดด้านล่างนี้:\n{market_data_str}"}
+            {"role": "user", "content": f"วิเคราะห์ข้อมูลตลาด {symbol} ล่าสุดด้านล่างนี้:\n{market_data_str}"}
         ]
         
-        logging.info("ส่งข้อมูลให้ Analyst Agent วิเคราะห์โอกาสเข้าเทรด...")
+        logging.info(f"ส่งข้อมูลให้ Analyst Agent วิเคราะห์โอกาสเข้าเทรด {symbol}...")
         return self._call_llm(model, messages, json_response=True)
 
-    def manage_position(self, position_details, current_price, balance):
+    def manage_position(self, position_details, current_price, balance, symbol="XAUUSD"):
         """
         Agent ตัวที่ 2: Manager Agent (วิเคราะห์และควบคุมความเสี่ยงของออเดอร์ที่ค้างอยู่)
         - model: claude-haiku-4-5 (หรือใช้ gpt-5.4-mini) เพื่อความรวดเร็วและประหยัด
@@ -89,8 +89,8 @@ class TradingAgents:
         # ตั้งค่าโมเดลสปีดเร็ว
         model = "claude-haiku-4-5"
         
-        system_prompt = f"""คุณคือ Risk Manager หน้าที่ของคุณคือควบคุมความเสี่ยงของออเดอร์ XAUUSD ที่เปิดอยู่
-วิเคราะห์ระดับราคาทองคำปัจจุบันเทียบกับออเดอร์ที่คุณถืออยู่ เพื่อตัดสินใจว่าจะทำอย่างไรกับออเดอร์นี้
+        system_prompt = f"""คุณคือ Risk Manager หน้าที่ของคุณคือควบคุมความเสี่ยงของออเดอร์ {symbol} ที่เปิดอยู่
+วิเคราะห์ระดับราคาปัจจุบันเทียบกับออเดอร์ที่คุณถืออยู่ เพื่อตัดสินใจว่าจะทำอย่างไรกับออเดอร์นี้
 
 ทางเลือกการตัดสินใจของคุณ:
 - "HOLD": ถือออเดอร์ต่อไปตามแผนเดิม
@@ -108,7 +108,7 @@ class TradingAgents:
 
         user_content = f"""สถานะบัญชีและออเดอร์ในปัจจุบัน:
 - ยอดเงินบาลานซ์: ${balance:.2f} USD
-- ราคาทองคำ XAUUSD ล่าสุด: {current_price}
+- ราคา {symbol} ล่าสุด: {current_price}
 - รายละเอียดออเดอร์ที่ถืออยู่:
 {json.dumps(position_details, indent=2)}
 
@@ -119,5 +119,5 @@ class TradingAgents:
             {"role": "user", "content": user_content}
         ]
         
-        logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ...")
+        logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol}...")
         return self._call_llm(model, messages, json_response=True)

@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+from datetime import datetime, timezone
 from mt5_integration import MT5Integration
 from trading_agents import TradingAgents
 
@@ -11,20 +12,37 @@ class MT5TradingBotOrchestrator:
     ตัวควบคุมการเทรดจริงบน MT5 (MetaTrader 5 Live Bot Orchestrator)
     ดึงราคาและแท่งเทียนจริงจาก MT5 -> ส่งวิเคราะห์ผ่าน Agent -> ส่งคำสั่งเทรดเข้าโบรกเกอร์จริง
     """
-    def __init__(self, api_key, login=None, password=None, server=None, symbol="XAUUSD"):
-        self.symbol = symbol
+    def __init__(self, api_key, login=None, password=None, server=None):
         # 1. โหลดโมดูลเชื่อมต่อ MT5
         self.mt5_bridge = MT5Integration(login=login, password=password, server=server)
         # 2. โหลดโมดูล Agent
         self.agents = TradingAgents(api_key=api_key)
+        self.symbol = "XAUUSD"
+
+    def is_gold_market_open(self):
+        """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดเสาร์-อาทิตย์หรือไม่ (อิงเวลา UTC)"""
+        now_utc = datetime.now(timezone.utc)
+        day = now_utc.weekday()  # 0 = Monday, ..., 6 = Sunday
+        hour = now_utc.hour
+        
+        # ปิดวันเสาร์ (5) และวันอาทิตย์ (6) ทั้งวัน
+        if day in [5, 6]:
+            return False
+        # ปิดวันศุกร์ (4) หลัง 21:00 UTC (ประมาณตี 4 วันเสาร์เวลาไทย)
+        if day == 4 and hour >= 21:
+            return False
+        # ปิดวันจันทร์ (0) ก่อน 00:00 UTC
+        if day == 0 and hour < 0:
+            return False
+        return True
         
     def _prepare_market_summary(self, df, current_price):
         """แปลงข้อมูลแท่งเทียนและราคาจาก MT5 ให้เป็น Text Summary ป้อนให้ AI"""
         if df.empty:
-            return "ไม่สามารถดึงข้อมูลประวัติราคาย้อนหลังจาก MT5 ได้"
+            return f"ไม่สามารถดึงข้อมูลประวัติราคาย้อนหลังจาก MT5 สำหรับ {self.symbol} ได้"
             
         last_row = df.iloc[-1]
-        summary = f"ราคาทองคำ XAUUSD ล่าสุดจากโบรกเกอร์: {current_price:.2f} USD\n"
+        summary = f"ราคา {self.symbol} ล่าสุดจากโบรกเกอร์: {current_price:.2f} USD\n"
         summary += f"ราคาปิดแท่งล่าสุด: {last_row['close']:.2f} | สูงสุด (High): {last_row['high']:.2f} | ต่ำสุด (Low): {last_row['low']:.2f}\n"
         
         # คำนวณ Simple Moving Averages เพื่อบอกเทรนด์
@@ -52,12 +70,20 @@ class MT5TradingBotOrchestrator:
         """
         logging.info("=== เริ่มต้นรอบการทำงานจริงบน MT5 (New Live Cycle) ===")
         
-        # 1. เชื่อมต่อ MT5
+        # 1. ตรวจสอบสถานะตลาดทองคำ (XAUUSD)
+        if self.is_gold_market_open():
+            self.symbol = "XAUUSD"
+            logging.info("ตลาดทองคำเปิดทำการ เลือกเทรดสินทรัพย์หลัก: XAUUSD")
+        else:
+            self.symbol = "BTCUSD"  # หรือ "BTCUSDT" ตามที่ Broker รองรับ
+            logging.info("ตลาดทองคำปิดทำการ (ช่วงวันหยุดเสาร์-อาทิตย์) สลับมาเทรดสินทรัพย์สำรอง: BTCUSD (Bitcoin)")
+            
+        # 2. เชื่อมต่อ MT5
         if not self.mt5_bridge.connect():
             logging.error("ไม่สามารถเชื่อมต่อโปรแกรม MT5 Terminal ได้ ข้ามรอบนี้")
             return
             
-        # 2. ดึงราคาและข้อมูลบัญชีล่าสุด
+        # 3. ดึงราคาและข้อมูลบัญชีล่าสุด
         price_info = self.mt5_bridge.get_current_price(self.symbol)
         acc_status = self.mt5_bridge.get_account_status()
         
@@ -69,9 +95,9 @@ class MT5TradingBotOrchestrator:
         balance = acc_status["balance"]
         equity = acc_status["equity"]
         
-        logging.info(f"บัญชีเงินจริง: Balance ${balance:.2f} | Equity ${equity:.2f} | ราคาทองตลาด: {current_price} USD")
+        logging.info(f"บัญชีเงินจริง: Balance ${balance:.2f} | Equity ${equity:.2f} | ราคา {self.symbol} ล่าสุด: {current_price} USD")
         
-        # 3. ดึงรายการออเดอร์ XAUUSD ที่ค้างอยู่ (ทั้งเทรดจริงค้าง และคำสั่งล่วงหน้าที่ยังไม่จับคู่)
+        # 4. ดึงรายการออเดอร์ที่ค้างอยู่ (ทั้งเทรดจริงค้าง และคำสั่งล่วงหน้าที่ยังไม่จับคู่)
         open_positions = self.mt5_bridge.get_open_positions(self.symbol)
         pending_orders = self.mt5_bridge.get_pending_orders(self.symbol)
         
@@ -79,7 +105,7 @@ class MT5TradingBotOrchestrator:
             # ----------------------------------------------------
             # 📌 สาขา A: พอร์ตว่างสนิท -> วิเคราะห์หาจุดเปิดออเดอร์ใหม่ (Market หรือ Pending)
             # ----------------------------------------------------
-            logging.info("พอร์ตว่างสนิท ไม่มีออเดอร์ค้างและคำสั่งล่วงหน้า ดึงประวัติแท่งเทียนย้อนหลัง...")
+            logging.info(f"พอร์ตว่างสนิท ไม่มีออเดอร์และคำสั่งล่วงหน้า ดึงกราฟย้อนหลัง {self.symbol}...")
             
             # ดึงแท่งเทียน 15m ย้อนหลัง 100 แท่ง
             df = self.mt5_bridge.get_historical_data(self.symbol, timeframe="15m", num_candles=100)
@@ -89,6 +115,7 @@ class MT5TradingBotOrchestrator:
             decision = self.agents.analyze_market(
                 market_data_str=market_summary,
                 balance=balance,
+                symbol=self.symbol,
                 leverage=100.0
             )
             
@@ -133,7 +160,8 @@ class MT5TradingBotOrchestrator:
                 decision = self.agents.manage_position(
                     position_details=ord,
                     current_price=current_price,
-                    balance=balance
+                    balance=balance,
+                    symbol=self.symbol
                 )
                 
                 if not decision:
@@ -163,7 +191,8 @@ class MT5TradingBotOrchestrator:
                 decision = self.agents.manage_position(
                     position_details=pos,
                     current_price=current_price,
-                    balance=balance
+                    balance=balance,
+                    symbol=self.symbol
                 )
                 
                 if not decision:
