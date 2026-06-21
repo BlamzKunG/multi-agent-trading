@@ -150,8 +150,15 @@ class MT5Integration:
             })
         return positions_list
 
-    def open_position(self, direction, lot, sl=None, tp=None, symbol="XAUUSD"):
-        """ส่งคำสั่งเปิดออเดอร์จริงเข้าตลาด"""
+    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD"):
+        """
+        ส่งคำสั่งเปิดออเดอร์ (Market Order) หรือ ตั้งคำสั่งรอดำเนินการ (Pending Order)
+        - direction: 'BUY' หรือ 'SELL'
+        - lot: ขนาดสัญญา
+        - sl: จุดตัดขาดทุน
+        - tp: จุดทำกำไร
+        - entry: ราคาที่ต้องการเข้าเทรด (หากละเว้นไว้ จะเปิดออเดอร์ที่ราคาปัจจุบันทันที)
+        """
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
@@ -159,46 +166,78 @@ class MT5Integration:
         if not price_info:
             return {"status": "ERROR", "message": "ไม่สามารถอ่านราคาปัจจุบันได้"}
             
-        # กำหนดประเภทคำสั่งซื้อขาย
-        order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
-        execution_price = price_info["ask"] if direction == "BUY" else price_info["bid"]
+        current_price = price_info["price"]
         
+        # ตรวจสอบการสร้าง Pending Order (หากราคาเข้าที่ AI ขอ ห่างจากราคาปัจจุบันเกินเกณฑ์)
+        # โดยเราตั้งเกณฑ์ตรวจสอบความเบี่ยงเบนไว้ที่ $1.50 USD
+        DEVIATION_LIMIT = 1.50
+        is_pending = False
+        order_type = None
+        target_price = current_price
+        
+        if entry is not None and abs(float(entry) - current_price) > DEVIATION_LIMIT:
+            is_pending = True
+            target_price = float(entry)
+            if direction == "BUY":
+                if target_price < current_price:
+                    order_type = mt5.ORDER_TYPE_BUY_LIMIT  # ซื้อที่ราคาต่ำกว่าตลาด
+                    logging.info(f"ราคาเสนอซื้อ ({target_price}) ต่ำกว่าราคาตลาด ({current_price}): เลือกใช้ BUY LIMIT")
+                else:
+                    order_type = mt5.ORDER_TYPE_BUY_STOP   # ซื้อเมื่อราคาทะลุแนวต้านขึ้นไป
+                    logging.info(f"ราคาเสนอซื้อ ({target_price}) สูงกว่าราคาตลาด ({current_price}): เลือกใช้ BUY STOP")
+            else: # SELL
+                if target_price > current_price:
+                    order_type = mt5.ORDER_TYPE_SELL_LIMIT # ขายที่ราคาสูงกว่าตลาด
+                    logging.info(f"ราคาเสนอขาย ({target_price}) สูงกว่าราคาตลาด ({current_price}): เลือกใช้ SELL LIMIT")
+                else:
+                    order_type = mt5.ORDER_TYPE_SELL_STOP  # ขายเมื่อราคาทะลุแนวรับลงไป
+                    logging.info(f"ราคาเสนอขาย ({target_price}) ต่ำกว่าราคาตลาด ({current_price}): เลือกใช้ SELL STOP")
+        else:
+            # เปิดออเดอร์ทันที (Market Order)
+            order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+            target_price = price_info["ask"] if direction == "BUY" else price_info["bid"]
+            
         request = {
-            "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": float(lot),
             "type": order_type,
-            "price": execution_price,
+            "price": target_price,
             "sl": float(sl) if sl else 0.0,
             "tp": float(tp) if tp else 0.0,
-            "deviation": 20,                # ค่า Slippage ที่ยอมรับได้ (จุด)
-            "magic": 123456,                # เลขอ้างอิงบอทของเรา
-            "comment": "LLM Multi-Agent Trade",
-            "type_time": mt5.ORDER_TIME_GTC, # ถือไปเรื่อยๆ จนกว่าจะโดนปิด
-            "type_filling": mt5.ORDER_FILLING_IOC
+            "deviation": 20,
+            "magic": 123456,
+            "comment": "LLM Auto Trade",
+            "type_time": mt5.ORDER_TIME_GTC
         }
         
-        # ส่งออเดอร์ไปยังเซิร์ฟเวอร์โบรกเกอร์
+        if is_pending:
+            request["action"] = mt5.TRADE_ACTION_PENDING
+        else:
+            request["action"] = mt5.TRADE_ACTION_DEAL
+            request["type_filling"] = mt5.ORDER_FILLING_IOC
+            
+        # ส่งคำสั่งไปยังโบรกเกอร์
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            logging.error(f"การเปิดออเดอร์ {direction} ล้มเหลว: {result.comment} (code: {result.retcode})")
-            return {"status": "FAILED", "message": result.comment}
+            err_msg = f"ส่งคำสั่ง {direction} ล้มเหลว: {result.comment} (code: {result.retcode})"
+            logging.error(err_msg)
+            return {"status": "FAILED", "message": err_msg}
             
-        logging.info(f"เปิดออเดอร์ {direction} สำเร็จผ่าน MT5! Ticket: {result.order} ที่ราคา {result.price}")
-        return {"status": "SUCCESS", "order_id": result.order}
+        order_text = "Pending Order" if is_pending else "Market Order"
+        logging.info(f"ส่ง {order_text} สำเร็จผ่าน MT5! Ticket: {result.order} ที่ราคา {result.price}")
+        return {"status": "SUCCESS", "order_id": result.order, "is_pending": is_pending}
 
     def close_position(self, ticket, symbol="XAUUSD"):
         """ปิดออเดอร์ที่ระบุด้วยตั๋ว Ticket ID"""
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
-        # ดึงรายละเอียดออเดอร์ที่ต้องการปิด
         positions = mt5.positions_get(ticket=ticket)
         if not positions:
-            return {"status": "ERROR", "message": "ไม่พบออเดอร์ที่ค้างในระบบ"}
+            return {"status": "ERROR", "message": "ไม่พบออเดอร์ค้างในระบบ (อาจจะถูกปิดไปแล้ว)"}
             
         pos = positions[0]
-        direction = "SELL" if pos.type == mt5.POSITION_TYPE_BUY else "BUY" # เปิดฝั่งตรงข้ามเพื่อปิดออเดอร์
+        direction = "SELL" if pos.type == mt5.POSITION_TYPE_BUY else "BUY"
         price_info = self.get_current_price(symbol)
         
         execution_price = price_info["bid"] if direction == "BUY" else price_info["ask"]
@@ -233,7 +272,7 @@ class MT5Integration:
             
         positions = mt5.positions_get(ticket=ticket)
         if not positions:
-            return {"status": "ERROR", "message": "ไม่พบออเดอร์ที่ค้างในระบบ"}
+            return {"status": "ERROR", "message": "ไม่พบออเดอร์ในระบบ"}
             
         pos = positions[0]
         final_sl = float(new_sl) if new_sl is not None else pos.sl
@@ -252,4 +291,53 @@ class MT5Integration:
             return {"status": "FAILED", "message": result.comment}
             
         logging.info(f"แก้ไข SL/TP ออเดอร์ {ticket} สำเร็จ | SL ใหม่: {final_sl}, TP ใหม่: {final_tp}")
+        return {"status": "SUCCESS"}
+
+    def get_pending_orders(self, symbol="XAUUSD"):
+        """ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) ที่ยังไม่ถูกจับคู่"""
+        if not self.connect():
+            return []
+            
+        orders = mt5.orders_get(symbol=symbol)
+        if orders is None:
+            logging.error(f"ไม่สามารถดึงข้อมูล Pending Orders ได้: {mt5.last_error()}")
+            return []
+            
+        orders_list = []
+        for ord in orders:
+            # ตรวจสอบประเภท Pending Order
+            ord_type = ""
+            if ord.type == mt5.ORDER_TYPE_BUY_LIMIT: ord_type = "BUY_LIMIT"
+            elif ord.type == mt5.ORDER_TYPE_BUY_STOP: ord_type = "BUY_STOP"
+            elif ord.type == mt5.ORDER_TYPE_SELL_LIMIT: ord_type = "SELL_LIMIT"
+            elif ord.type == mt5.ORDER_TYPE_SELL_STOP: ord_type = "SELL_STOP"
+            else: continue  # ข้ามหากไม่ใช่ประเภท Pending
+            
+            orders_list.append({
+                "id": ord.ticket,
+                "direction": "BUY" if "BUY" in ord_type else "SELL",
+                "type": ord_type,
+                "lot": ord.volume_current,
+                "entry_price": ord.price_open,
+                "sl": ord.sl,
+                "tp": ord.tp
+            })
+        return orders_list
+
+    def cancel_pending_order(self, ticket):
+        """ยกเลิกคำสั่งซื้อขายล่วงหน้า (Pending Order)"""
+        if not self.connect():
+            return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
+            
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": int(ticket)
+        }
+        
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"ไม่สามารถยกเลิกคำสั่งล่วงหน้า {ticket} ได้: {result.comment}")
+            return {"status": "FAILED", "message": result.comment}
+            
+        logging.info(f"ยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {ticket} สำเร็จ")
         return {"status": "SUCCESS"}

@@ -71,14 +71,15 @@ class MT5TradingBotOrchestrator:
         
         logging.info(f"บัญชีเงินจริง: Balance ${balance:.2f} | Equity ${equity:.2f} | ราคาทองตลาด: {current_price} USD")
         
-        # 3. ดึงรายการออเดอร์ XAUUSD ที่ค้างอยู่
+        # 3. ดึงรายการออเดอร์ XAUUSD ที่ค้างอยู่ (ทั้งเทรดจริงค้าง และคำสั่งล่วงหน้าที่ยังไม่จับคู่)
         open_positions = self.mt5_bridge.get_open_positions(self.symbol)
+        pending_orders = self.mt5_bridge.get_pending_orders(self.symbol)
         
-        if not open_positions:
+        if not open_positions and not pending_orders:
             # ----------------------------------------------------
-            # 📌 สาขา A: ไม่มีออเดอร์ค้าง -> วิเคราะห์หาจุดเปิดออเดอร์ใหม่
+            # 📌 สาขา A: พอร์ตว่างสนิท -> วิเคราะห์หาจุดเปิดออเดอร์ใหม่ (Market หรือ Pending)
             # ----------------------------------------------------
-            logging.info("พอร์ตว่าง ไม่มีออเดอร์ค้าง ดึงประวัติแท่งเทียนย้อนหลัง...")
+            logging.info("พอร์ตว่างสนิท ไม่มีออเดอร์ค้างและคำสั่งล่วงหน้า ดึงประวัติแท่งเทียนย้อนหลัง...")
             
             # ดึงแท่งเทียน 15m ย้อนหลัง 100 แท่ง
             df = self.mt5_bridge.get_historical_data(self.symbol, timeframe="15m", num_candles=100)
@@ -88,7 +89,7 @@ class MT5TradingBotOrchestrator:
             decision = self.agents.analyze_market(
                 market_data_str=market_summary,
                 balance=balance,
-                leverage=100.0  # สามารถเปลี่ยนให้ดึงอัตโนมัติจาก MT5 ได้
+                leverage=100.0
             )
             
             if not decision:
@@ -103,23 +104,57 @@ class MT5TradingBotOrchestrator:
                 lot = decision.get("lot", 0.01)
                 sl = decision.get("sl")
                 tp = decision.get("tp")
+                entry = decision.get("entry")
                 
                 # Double Verification (กฎเหล็กความปลอดภัยตรวจสอบขนาดล็อต)
                 if balance < 100.0 and lot > 0.01:
                     logging.warning(f"เตือน: ขนาดล็อตใหญ่เกินไปสำหรับทุนจริง ปรับลดลงเหลือ 0.01 (เดิมขอ {lot})")
                     lot = 0.01
                     
-                logging.info(f"กำลังส่งคำสั่งเทรดจริง: {action} ขนาด {lot} Lot...")
-                res = self.mt5_bridge.open_position(direction=action, lot=lot, sl=sl, tp=tp, symbol=self.symbol)
+                logging.info(f"กำลังส่งคำสั่งเทรด: {action} ขนาด {lot} Lot (เป้าหมายราคาเข้า: {entry})...")
+                res = self.mt5_bridge.open_position(direction=action, lot=lot, sl=sl, tp=tp, entry=entry, symbol=self.symbol)
                 logging.info(f"ผลการทำรายการบนโบรกเกอร์: {res}")
             else:
                 logging.info("AI ประเมินว่ายังไม่ควรกระทำการใดๆ ให้รอดูสัญญาณต่อไป (HOLD)")
                 
+        elif pending_orders and not open_positions:
+            # ----------------------------------------------------
+            # 📌 สาขา B1: มีคำสั่ง Pending Order ค้างอยู่ (ยังไม่จับคู่) -> ส่งให้ AI จัดการ/ยกเลิก
+            # ----------------------------------------------------
+            logging.info(f"มีคำสั่งล่วงหน้า (Pending Order) รอค้างในระบบ {len(pending_orders)} ไม้")
+            
+            for ord in pending_orders:
+                order_ticket = ord['id']
+                
+                # จำลองโครงสร้างเพื่อให้ AI ตัวคุมความเสี่ยงเข้าใจได้ (เนื่องจากยังไม่มี P&L เกิดขึ้นจริง)
+                ord['pnl'] = 0.0
+                ord['entry_price'] = ord['entry_price']  # ราคาเป้าหมายที่รอเข้า
+                
+                decision = self.agents.manage_position(
+                    position_details=ord,
+                    current_price=current_price,
+                    balance=balance
+                )
+                
+                if not decision:
+                    logging.error(f"ไม่ได้รับแผนจัดการคำสั่งล่วงหน้า {order_ticket} จาก AI")
+                    continue
+                    
+                action = decision.get("action")
+                reason = decision.get("reasoning")
+                logging.info(f"การจัดการของ AI สำหรับคำสั่งล่วงหน้า {order_ticket}: {action} | เหตุผล: {reason}")
+                
+                if action == "CLOSE":
+                    logging.info(f"กำลังยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {order_ticket}...")
+                    self.mt5_bridge.cancel_pending_order(order_ticket)
+                else:
+                    logging.info(f"คงคำสั่งล่วงหน้า Ticket {order_ticket} ไว้ตามเดิม (HOLD)")
+                    
         else:
             # ----------------------------------------------------
-            # 📌 สาขา B: มีออเดอร์ค้างอยู่ -> ส่งให้ AI จัดการบริหารหน้าไม้เพื่อกันความเสี่ยง
+            # 📌 สาขา B2: มีออเดอร์ค้างอยู่ (มีผลกำไรขาดทุนวิ่งอยู่) -> ส่งให้ AI คุมความเสี่ยงหน้าไม้
             # ----------------------------------------------------
-            logging.info(f"มีออเดอร์ค้างอยู่ใน MT5 ทั้งหมด {len(open_positions)} ไม้")
+            logging.info(f"มีออเดอร์ค้างอยู่ (Active Position) ทั้งหมด {len(open_positions)} ไม้")
             
             for pos in open_positions:
                 ticket_id = pos['id']
