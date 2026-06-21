@@ -39,32 +39,88 @@ class TradingBotOrchestrator:
             return False
         return True
 
-    def _prepare_market_summary(self, df):
-        """แปลงตารางข้อมูลราคาและอินดิเคเตอร์ให้เป็นข้อความสรุปเพื่อให้ AI เข้าใจง่าย"""
-        if df.empty:
-            return f"ไม่สามารถโหลดข้อมูลราคาล่าสุดสำหรับ {self.symbol} ได้"
-            
-        last_row = df.iloc[-1]
-        summary = f"ราคาล่าสุดสำหรับ {self.symbol}: {last_row['close']:.2f} USD\n"
-        summary += f"จุดสูงสุด (High): {last_row['high']:.2f} | จุดต่ำสุด (Low): {last_row['low']:.2f}\n"
+    def _prepare_market_summary(self, df_5m, df_15m, df_1h, current_price):
+        """แปลงข้อมูลราคาจาก 3 กรอบเวลา (5m, 15m, 1h) ให้เป็นข้อความสรุปวิเคราะห์เชิงลึก"""
+        import pandas as pd
         
-        # คำนวณ Simple Moving Averages สั้นๆ เพื่อป้อนเพิ่มให้ AI (เช่น SMA 10 และ SMA 30)
-        if len(df) >= 30:
-            df_sma10 = df['close'].rolling(10).mean()
-            df_sma30 = df['close'].rolling(30).mean()
+        summary = f"=== ข้อมูลราคาและอินดิเคเตอร์ Multi-Timeframe สำหรับ {self.symbol} ===\n"
+        summary += f"ราคาตลาดล่าสุด: {current_price:.2f} USD\n\n"
+        
+        # 1. วิเคราะห์ กรอบเวลาใหญ่ (HTF) - 1h
+        summary += "1. [กรอบเวลา 1 ชั่วโมง - เทรนด์หลักและแนวรับแนวต้านสำคัญ]\n"
+        if not df_1h.empty:
+            last_row_1h = df_1h.iloc[-1]
+            summary += f"- ราคาปิดแท่งล่าสุด (1h): {last_row_1h['close']:.2f}\n"
+            if len(df_1h) >= 30:
+                df_sma10 = df_1h['close'].rolling(10).mean()
+                df_sma30 = df_1h['close'].rolling(30).mean()
+                last_sma10 = df_sma10.iloc[-1]
+                last_sma30 = df_sma30.iloc[-1]
+                trend_1h = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
+                summary += f"- เทรนด์หลัก (1h): {trend_1h} | SMA10: {last_sma10:.2f} | SMA30: {last_sma30:.2f}\n"
             
-            last_sma10 = df_sma10.iloc[-1]
-            last_sma30 = df_sma30.iloc[-1]
+            # หาจุดสูงสุด/ต่ำสุดใน 20 แท่งล่าสุดเพื่อวิเคราะห์แนวรับแนวต้าน
+            if len(df_1h) >= 20:
+                recent_20 = df_1h.tail(20)
+                highest_20 = recent_20['high'].max()
+                lowest_20 = recent_20['low'].min()
+                summary += f"- แนวต้านสำคัญช่วงนี้ (High 20h): {highest_20:.2f}\n"
+                summary += f"- แนวรับสำคัญช่วงนี้ (Low 20h): {lowest_20:.2f}\n"
+        else:
+            summary += "- (ไม่สามารถดึงข้อมูล 1h ได้)\n"
             
-            trend = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-            summary += f"เส้นค่าเฉลี่ยระยะสั้น (SMA 10): {last_sma10:.2f}\n"
-            summary += f"เส้นค่าเฉลี่ยระยะกลาง (SMA 30): {last_sma30:.2f}\n"
-            summary += f"เทรนด์ระยะสั้นในกราฟ: {trend}\n"
+        summary += "\n"
+        
+        # 2. วิเคราะห์ กรอบเวลากลาง (ITF) - 15m
+        summary += "2. [กรอบเวลา 15 นาที - โครงสร้างราคาและระยะปลอดภัย]\n"
+        if not df_15m.empty:
+            last_row_15m = df_15m.iloc[-1]
+            summary += f"- ราคาปิดแท่งล่าสุด (15m): {last_row_15m['close']:.2f}\n"
+            if len(df_15m) >= 30:
+                df_sma10 = df_15m['close'].rolling(10).mean()
+                df_sma30 = df_15m['close'].rolling(30).mean()
+                last_sma10 = df_sma10.iloc[-1]
+                last_sma30 = df_sma30.iloc[-1]
+                trend_15m = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
+                summary += f"- เทรนด์รอง (15m): {trend_15m} | SMA10: {last_sma10:.2f} | SMA30: {last_sma30:.2f}\n"
+                
+            # คำนวณ ATR เพื่อใช้วัดความผันผวนหาระยะ Stop Loss
+            if len(df_15m) >= 14:
+                high_low = df_15m['high'] - df_15m['low']
+                high_cp = (df_15m['high'] - df_15m['close'].shift()).abs()
+                low_cp = (df_15m['low'] - df_15m['close'].shift()).abs()
+                tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+                atr = tr.rolling(14).mean().iloc[-1]
+                summary += f"- ค่าความผันผวน ATR (14): {atr:.2f} (แนะนำตั้ง SL ห่างอย่างน้อย 1.5 - 2 เท่าของ ATR)\n"
+                
+            # แสดงประวัติราคา 3 แท่งล่าสุด
+            summary += "- ประวัติราคา 3 แท่งล่าสุด (15m):\n"
+            for idx, row in df_15m.tail(3).iterrows():
+                summary += f"  * เวลา {row['timestamp']}: Open {row['open']:.2f} | Close {row['close']:.2f} | Vol: {row['volume']}\n"
+        else:
+            summary += "- (ไม่สามารถดึงข้อมูล 15m ได้)\n"
             
-        # ประวัติราคา 5 แท่งเทียนล่าสุด
-        summary += "\nราคาปิด 5 แท่งเทียนล่าสุด:\n"
-        for idx, row in df.tail(5).iterrows():
-            summary += f"- เวลา {row['timestamp']}: {row['close']:.2f} USD (Vol: {row['volume']})\n"
+        summary += "\n"
+        
+        # 3. วิเคราะห์ กรอบเวลาเล็ก (LTF) - 5m
+        summary += "3. [กรอบเวลา 5 นาที - สัญญาณจุดเข้าซื้อขายปัจจุบัน]\n"
+        if not df_5m.empty:
+            last_row_5m = df_5m.iloc[-1]
+            summary += f"- ราคาปิดแท่งล่าสุด (5m): {last_row_5m['close']:.2f}\n"
+            if len(df_5m) >= 30:
+                df_sma10 = df_5m['close'].rolling(10).mean()
+                df_sma30 = df_5m['close'].rolling(30).mean()
+                last_sma10 = df_sma10.iloc[-1]
+                last_sma30 = df_sma30.iloc[-1]
+                trend_5m = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
+                summary += f"- โมเมนตัมระยะสั้น (5m): {trend_5m}\n"
+                
+            # แสดงประวัติราคา 3 แท่งล่าสุด
+            summary += "- ประวัติราคา 3 แท่งล่าสุด (5m):\n"
+            for idx, row in df_5m.tail(3).iterrows():
+                summary += f"  * เวลา {row['timestamp']}: Open {row['open']:.2f} | Close {row['close']:.2f} | Vol: {row['volume']}\n"
+        else:
+            summary += "- (ไม่สามารถดึงข้อมูล 5m ได้)\n"
             
         return summary
 
@@ -106,11 +162,14 @@ class TradingBotOrchestrator:
             # ----------------------------------------------------
             # 📌 สาขา A: ไม่มีออเดอร์ว่าง -> วิเคราะห์หาจุดเปิดออเดอร์
             # ----------------------------------------------------
-            logging.info("สถานะพอร์ต: ไม่มีออเดอร์ค้าง ดึงราคาเพื่อเริ่มวิเคราะห์...")
+            logging.info("สถานะพอร์ต: ไม่มีออเดอร์ค้าง ดึงราคาเพื่อเริ่มวิเคราะห์แบบ Multi-Timeframe (5m, 15m, 1h)...")
             
-            # ดึงประวัติแท่งเทียน 15 นาที ย้อนหลัง 2 วัน เพื่อทำเป็น Technical Summary
-            df = self.data_feed.get_historical_data(interval="15m", period="2d")
-            market_summary = self._prepare_market_summary(df)
+            # ดึงประวัติย้อนหลัง 3 กรอบเวลา
+            df_5m = self.data_feed.get_historical_data(interval="5m", period="1d")
+            df_15m = self.data_feed.get_historical_data(interval="15m", period="2d")
+            df_1h = self.data_feed.get_historical_data(interval="1h", period="5d")
+            
+            market_summary = self._prepare_market_summary(df_5m, df_15m, df_1h, current_price)
             
             # ส่งให้ Analyst Agent วิเคราะห์
             decision = self.agents.analyze_market(
