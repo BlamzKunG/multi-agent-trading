@@ -125,9 +125,9 @@ class TradingAgents:
     def analyze_market(self, market_data_str, balance, symbol="XAUUSD", leverage=100.0):
         """
         Agent ตัวที่ 1: Analyst Agent (วิเคราะห์ตลาดและเสนอแผนเข้าออเดอร์)
-        - model: sonnet-4-5 (หรือ gpt-5.5)
+        # - model: gpt-5.5 (หรือ sonnet-4-5)
         """
-        model = "sonnet-4-5" 
+        model = "gpt-5.5" 
         
         system_prompt = f"""คุณคือ AI Technical Analyst & Risk Manager ผู้เชี่ยวชาญการเทรด {symbol} ด้วยกลยุทธ์ Multi-Timeframe Analysis
 หน้าที่ของคุณคือวิเคราะห์โครงสร้างตลาดและทิศทางราคาจากหลายกรอบเวลา (1h, 15m, 5m) เพื่อหาจุดเข้าเปิดสัญญาที่ได้เปรียบสูงและมีระดับความเสี่ยงต่ำ
@@ -162,14 +162,14 @@ class TradingAgents:
         ]
         
         logging.info(f"ส่งข้อมูลให้ Analyst Agent วิเคราะห์โอกาสเข้าเทรด {symbol}...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-5.5", "haiku"])
+        return self._call_llm(model, messages, json_response=True, fallbacks=["sonnet-4-5", "haiku"])
 
     def manage_position(self, position_details, current_price, balance, symbol="XAUUSD"):
         """
         Agent ตัวที่ 2: Manager Agent (วิเคราะห์และควบคุมความเสี่ยงของออเดอร์ที่ค้างอยู่)
-        - model: haiku (หรือ gpt-5.4-mini) เพื่อความรวดเร็วและประหยัด
+        # - model: gpt-5.4-mini (หรือ haiku) เพื่อความรวดเร็วและประหยัด
         """
-        model = "haiku"
+        model = "gpt-5.4-mini"
         
         system_prompt = f"""คุณคือ Risk Manager หน้าที่ของคุณคือควบคุมความเสี่ยงของออเดอร์ {symbol} ที่เปิดอยู่
 วิเคราะห์ระดับราคาปัจจุบันเทียบกับออเดอร์ที่คุณถืออยู่ เพื่อตัดสินใจว่าจะทำอย่างไรกับออเดอร์นี้
@@ -202,4 +202,4 @@ class TradingAgents:
         ]
         
         logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol}...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-5.4-mini", "sonnet-4-5"])
+        return self._call_llm(model, messages, json_response=True, fallbacks=["haiku", "sonnet-4-5"])
