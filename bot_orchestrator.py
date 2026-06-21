@@ -272,15 +272,6 @@ class TradingBotOrchestrator:
                         f"**Reason:** {reason}"
                     )
                     self.send_discord_message(msg)
-                elif action == "BREAK_EVEN":
-                    self.exchange.modify_sl_tp(pos_id, new_sl=pos['entry_price'])
-                    msg = (
-                        f"🛡️ **[Sim Mode - Break Even]**\n"
-                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
-                        f"**Action:** Move SL to Entry ({pos['entry_price']:.2f})\n"
-                        f"**Reason:** {reason}"
-                    )
-                    self.send_discord_message(msg)
                 elif action == "TRAILING_STOP":
                     new_sl = decision.get("new_sl")
                     new_tp = decision.get("new_tp")

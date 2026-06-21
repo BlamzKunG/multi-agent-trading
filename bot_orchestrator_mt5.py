@@ -318,16 +318,6 @@ class MT5TradingBotOrchestrator:
                         f"**Reason:** {reason}"
                     )
                     self.send_discord_message(msg)
-                elif action == "BREAK_EVEN":
-                    logging.info(f"กำลังเลื่อน Stop Loss ออเดอร์ {ticket_id} กันหน้าทุนที่ {pos['entry_price']}...")
-                    self.mt5_bridge.modify_position(ticket_id, new_sl=pos['entry_price'])
-                    msg = (
-                        f"🛡️ **[MT5 Live - Break Even]**\n"
-                        f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
-                        f"**Action:** Move SL to Entry ({pos['entry_price']:.2f})\n"
-                        f"**Reason:** {reason}"
-                    )
-                    self.send_discord_message(msg)
                 elif action == "TRAILING_STOP":
                     new_sl = decision.get("new_sl")
                     new_tp = decision.get("new_tp")
