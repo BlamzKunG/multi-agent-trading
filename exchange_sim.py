@@ -1,5 +1,6 @@
 import uuid
 import logging
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -104,7 +105,8 @@ class MockExchange:
             "sl": float(sl) if sl is not None else None,
             "tp": float(tp) if tp is not None else None,
             "pnl": 0.0,
-            "margin": required_margin
+            "margin": required_margin,
+            "open_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
         self.positions[pos_id] = position
@@ -131,6 +133,7 @@ class MockExchange:
         pos['pnl'] = final_pnl
         pos['close_price'] = execution_price
         pos['close_reason'] = reason
+        pos['close_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         self.history.append(pos)
         logging.info(f"ปิดออเดอร์ {pos_id} สำเร็จ ({reason}) ที่ราคา {execution_price} | ได้กำไร/ขาดทุน: ${final_pnl:.2f} | บาลานซ์คงเหลือ: ${self.balance:.2f}")

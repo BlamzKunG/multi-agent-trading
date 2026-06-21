@@ -134,7 +134,11 @@ class TradingBotOrchestrator:
                 tp = decision.get("tp")
                 
                 # Double Verification (ระบบความปลอดภัยตรวจสอบขนาดล็อต)
-                if self.exchange.balance < 100.0 and lot > 0.01:
+                max_allowed_lot = getattr(self, 'max_lot', 0.01)
+                if lot > max_allowed_lot:
+                    logging.warning(f"เตือน: ขนาดล็อตที่ขอมา ({lot}) เกินเพดานสูงสุดที่จำกัดไว้ ({max_allowed_lot}) ปรับล็อตเหลือ {max_allowed_lot}")
+                    lot = max_allowed_lot
+                elif self.exchange.balance < 100.0 and lot > 0.01:
                     logging.warning(f"เตือน: พอร์ตมีตรรกะเสี่ยงเกินขอบเขต ปรับล็อตลดลงเหลือ 0.01 เพื่อความปลอดภัย (เดิมขอ {lot})")
                     lot = 0.01
                     

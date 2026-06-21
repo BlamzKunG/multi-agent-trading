@@ -134,7 +134,11 @@ class MT5TradingBotOrchestrator:
                 entry = decision.get("entry")
                 
                 # Double Verification (กฎเหล็กความปลอดภัยตรวจสอบขนาดล็อต)
-                if balance < 100.0 and lot > 0.01:
+                max_allowed_lot = getattr(self, 'max_lot', 0.01)
+                if lot > max_allowed_lot:
+                    logging.warning(f"เตือน: ขนาดล็อตที่ขอมา ({lot}) เกินเพดานสูงสุดที่จำกัดไว้ ({max_allowed_lot}) ปรับล็อตเหลือ {max_allowed_lot}")
+                    lot = max_allowed_lot
+                elif balance < 100.0 and lot > 0.01:
                     logging.warning(f"เตือน: ขนาดล็อตใหญ่เกินไปสำหรับทุนจริง ปรับลดลงเหลือ 0.01 (เดิมขอ {lot})")
                     lot = 0.01
                     

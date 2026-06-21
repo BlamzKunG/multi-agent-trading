@@ -393,3 +393,92 @@ class MT5Integration:
             
         logging.info(f"ยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {ticket} สำเร็จ")
         return {"status": "SUCCESS"}
+
+    def get_trade_history(self, symbol="XAUUSD", days=7):
+        """ดึงประวัติการเทรดที่ปิดแล้วย้อนหลังสำหรับสินทรัพย์ที่กำหนด"""
+        if not self.connect():
+            return []
+            
+        from datetime import datetime, timedelta, timezone
+        
+        # ค้นหาสัญญาจำลองตามจริงเพื่อคำนวณราคาเปิดย้อนหลังกรณีจำเป็น
+        sym_info = mt5.symbol_info(symbol)
+        contract_size = sym_info.trade_contract_size if sym_info else (100.0 if "XAU" in symbol else 1.0)
+        
+        # ดึงประวัติย้อนหลังตั้งแต่ n วันก่อน
+        now = datetime.now()
+        from_date = now - timedelta(days=days)
+        to_date = now + timedelta(days=1)
+        
+        deals = mt5.history_deals_get(from_date, to_date)
+        if deals is None:
+            logging.error(f"ไม่สามารถดึงข้อมูลประวัติการเทรดได้: {mt5.last_error()}")
+            return []
+            
+        # จัดกลุ่มดีลตาม position_id
+        position_deals = {}
+        for deal in deals:
+            # กรองดีลเฉพาะเกี่ยวกับสินทรัพย์ที่สนใจ
+            if not deal.symbol or symbol not in deal.symbol:
+                continue
+            pos_id = deal.position_id
+            if pos_id not in position_deals:
+                position_deals[pos_id] = []
+            position_deals[pos_id].append(deal)
+            
+        history_list = []
+        for pos_id, p_deals in position_deals.items():
+            # กรองเฉพาะดีลที่ปิดสมบูรณ์แล้ว (มี DEAL_ENTRY_OUT)
+            has_out = any(d.entry == mt5.DEAL_ENTRY_OUT for d in p_deals)
+            if not has_out:
+                continue
+                
+            open_deal = None
+            close_deal = None
+            total_pnl = 0.0
+            total_lot = 0.0
+            
+            for d in p_deals:
+                if d.entry == mt5.DEAL_ENTRY_IN:
+                    open_deal = d
+                    total_lot = d.volume
+                elif d.entry == mt5.DEAL_ENTRY_OUT:
+                    close_deal = d
+                total_pnl += d.profit + d.commission + d.swap
+                
+            if not open_deal or not close_deal:
+                continue
+                
+            direction = "BUY" if open_deal.type == mt5.DEAL_TYPE_BUY else "SELL"
+            
+            # เวลาเปิด/ปิด (เวลา Server MT5)
+            open_time_str = datetime.fromtimestamp(open_deal.time).strftime('%Y-%m-%d %H:%M:%S')
+            close_time_str = datetime.fromtimestamp(close_deal.time).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # เหตุผลปิดออเดอร์
+            close_reason = "MARKET_CLOSE"
+            if close_deal.reason == 3:
+                close_reason = "SL"
+            elif close_deal.reason == 4:
+                close_reason = "TP"
+            elif close_deal.reason == 5:
+                close_reason = "STOP_OUT"
+            elif close_deal.reason == 1:
+                close_reason = "BOT_CLOSE"
+                
+            history_list.append({
+                "id": str(pos_id),
+                "direction": direction,
+                "lot": total_lot,
+                "entry_price": open_deal.price,
+                "close_price": close_deal.price,
+                "sl": open_deal.sl if hasattr(open_deal, 'sl') and open_deal.sl > 0 else None,
+                "tp": open_deal.tp if hasattr(open_deal, 'tp') and open_deal.tp > 0 else None,
+                "pnl": round(total_pnl, 2),
+                "open_time": open_time_str,
+                "close_time": close_time_str,
+                "close_reason": close_reason
+            })
+            
+        history_list.sort(key=lambda x: x["close_time"], reverse=True)
+        return history_list

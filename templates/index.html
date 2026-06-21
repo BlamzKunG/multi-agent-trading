@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MaxPlus AI - Trading Bot Dashboard</title>
+    <!-- Google Fonts: Outfit (UI) & JetBrains Mono (Terminal) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Outfit:wght@100..900&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js for Equity Curve -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- TradingView Widget Script -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    
+    <style>
+        :root {
+            --bg-color: #020617;
+            --surface-color: rgba(15, 23, 42, 0.45);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-purple: #818cf8;
+            --accent-pink: #f472b6;
+            --accent-amber: #fbbf24;
+            --success-color: #10b981;
+            --danger-color: #ef4444;
+            --glow-color: rgba(129, 140, 248, 0.15);
+            --font-ui: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-ui);
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(129, 140, 248, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(244, 114, 182, 0.05) 0%, transparent 40%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.2rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(2, 6, 23, 0.85);
+            backdrop-filter: blur(12px);
+            z-index: 50;
+            position: sticky;
+            top: 0;
+        }
+
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            font-size: 1.6rem;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 8px rgba(129, 140, 248, 0.4));
+            animation: pulse 2s infinite alternate;
+        }
+
+        .logo-text {
+            font-size: 1.3rem;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            background: linear-gradient(to right, #ffffff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .mode-badge {
+            background: rgba(129, 140, 248, 0.15);
+            border: 1px solid rgba(129, 140, 248, 0.3);
+            color: var(--accent-purple);
+            padding: 0.35rem 0.8rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            box-shadow: 0 0 10px rgba(129, 140, 248, 0.1);
+        }
+
+        .mode-badge.live {
+            background: rgba(16, 185, 129, 0.12);
+            border-color: rgba(16, 185, 129, 0.3);
+            color: var(--success-color);
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.1);
+        }
+
+        .btn {
+            background: linear-gradient(135deg, var(--accent-purple), #6366f1);
+            color: white;
+            border: none;
+            padding: 0.55rem 1.25rem;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+            filter: brightness(1.1);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            box-shadow: none;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.2);
+            box-shadow: none;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger-color), #dc2626);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-danger:hover {
+            box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
+        main {
+            flex: 1;
+            padding: 2rem;
+            max-width: 1440px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(129, 140, 248, 0.25);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(to right, var(--accent-purple), var(--accent-pink));
+            opacity: 0.7;
+        }
+
+        .stat-card.profit::before {
+            background: var(--success-color);
+        }
+
+        .stat-card.loss::before {
+            background: var(--danger-color);
+        }
+
+        .stat-card.symbol::before {
+            background: var(--accent-amber);
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .stat-desc {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .stat-icon {
+            position: absolute;
+            right: 1.25rem;
+            bottom: 1.25rem;
+            font-size: 2.25rem;
+            opacity: 0.05;
+            color: var(--text-primary);
+        }
+
+        /* Dashboard Layout */
+        .dashboard-layout {
+            display: grid;
+            grid-template-columns: 1.80fr 1.20fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 1100px) {
+            .dashboard-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
+
+        .panel-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .panel-title i {
+            color: var(--accent-purple);
+        }
+
+        /* Table Styling */
+        .table-container {
+            overflow-x: auto;
+            width: 100%;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        th {
+            padding: 0.75rem 1rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 0.85rem 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            font-weight: 500;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .badge-buy {
+            background: rgba(16, 185, 129, 0.12);
+            color: var(--success-color);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .badge-sell {
+            background: rgba(239, 68, 68, 0.12);
+            color: var(--danger-color);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .txt-success { color: var(--success-color); }
+        .txt-danger { color: var(--danger-color); }
+
+        .empty-state {
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .empty-state i {
+            font-size: 2rem;
+            opacity: 0.3;
+        }
+
+        /* Config Panel Form */
+        .config-form {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            transition: all 0.3s ease;
+        }
+
+        label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        select, input {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.6rem 0.8rem;
+            border-radius: 8px;
+            font-family: var(--font-ui);
+            font-size: 0.9rem;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        select:focus, input:focus {
+            border-color: var(--accent-purple);
+            box-shadow: 0 0 10px rgba(129, 140, 248, 0.2);
+        }
+
+        /* Terminal Logging */
+        .terminal-container {
+            background: #020617;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            height: 280px;
+            overflow-y: auto;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            line-height: 1.4;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            scroll-behavior: smooth;
+        }
+
+        .log-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-info { color: #f8fafc; }
+        .log-warning { color: var(--accent-amber); }
+        .log-error { color: var(--danger-color); }
+        .log-success { color: var(--success-color); }
+
+        .terminal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            font-family: var(--font-ui);
+            font-weight: 600;
+            text-transform: uppercase;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 0.4rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .terminal-dots {
+            display: flex;
+            gap: 0.3rem;
+        }
+
+        .terminal-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 55px;
+        }
+
+        .dot-red { background-color: #ef4444; }
+        .dot-yellow { background-color: #eab308; }
+        .dot-green { background-color: #22c55e; }
+
+        /* Animation */
+        @keyframes pulse {
+            0% { filter: drop-shadow(0 0 2px rgba(129, 140, 248, 0.2)); }
+            100% { filter: drop-shadow(0 0 12px rgba(129, 140, 248, 0.6)); }
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(2, 6, 23, 0.2);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-section">
+            <i class="fa-solid fa-brain logo-icon"></i>
+            <span class="logo-text">MaxPlus AI Agent Hub</span>
+        </div>
+        <div class="header-controls">
+            <div id="modeBadge" class="mode-badge">
+                <i class="fa-solid fa-flask"></i> <span>Simulation Mode</span>
+            </div>
+            <button id="runCycleBtn" class="btn" onclick="triggerRunCycle()">
+                <i class="fa-solid fa-play"></i> Run Sync Cycle
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <!-- Stats Row -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span class="stat-label">Balance</span>
+                <span class="stat-value" id="valBalance">$0.00</span>
+                <span class="stat-desc"><i class="fa-solid fa-wallet"></i> ยอดเงินบาลานซ์คงเหลือ</span>
+                <i class="fa-solid fa-dollar-sign stat-icon"></i>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Equity</span>
+                <span class="stat-value" id="valEquity">$0.00</span>
+                <span class="stat-desc"><i class="fa-solid fa-shield-halved"></i> ยอดรวมบวกกำไรที่วิ่งอยู่</span>
+                <i class="fa-solid fa-chart-line stat-icon"></i>
+            </div>
+            <div class="stat-card profit" id="cardPnl">
+                <span class="stat-label">Floating P&L</span>
+                <span class="stat-value" id="valPnl">$0.00</span>
+                <span class="stat-desc" id="valPnlDesc">ไม่มีออเดอร์ค้างอยู่</span>
+                <i class="fa-solid fa-scale-balanced stat-icon"></i>
+            </div>
+            <div class="stat-card symbol">
+                <span class="stat-label" id="lblSymbol">Asset</span>
+                <span class="stat-value" id="valPrice">0.00</span>
+                <span class="stat-desc"><i class="fa-solid fa-clock"></i> ราคาตลาดปัจจุบันดึงจาก Broker</span>
+                <i class="fa-solid fa-coins stat-icon"></i>
+            </div>
+        </div>
+
+        <!-- Layout Grid -->
+        <div class="dashboard-layout">
+            
+            <!-- Left Side: Chart & Tables -->
+            <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                
+                <!-- Live TradingView Chart -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title"><i class="fa-solid fa-chart-area"></i> Live Market Chart (กราฟราคาราคาปัจจุบัน)</span>
+                    </div>
+                    <div id="tradingview_chart_container" style="height: 380px; width: 100%; border-radius: 8px; overflow: hidden; background: #020617;">
+                        <div id="tradingview_chart" style="height: 100%; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- Open Positions -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title"><i class="fa-solid fa-folder-open"></i> Active Positions (ออเดอร์ค้าง)</span>
+                        <span class="mode-badge" style="background: rgba(255,255,255,0.05); border-color: var(--border-color); color: var(--text-primary);" id="openPosCount">0 ไม้</span>
+                    </div>
+                    <div class="table-container">
+                        <table id="positionsTable">
+                            <thead>
+                                <tr>
+                                    <th>Ticket ID</th>
+                                    <th>Direction</th>
+                                    <th>Size (Lot)</th>
+                                    <th>Entry Price</th>
+                                    <th>SL</th>
+                                    <th>TP</th>
+                                    <th>Floating P&L</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- JS Populated -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Pending Orders -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title"><i class="fa-solid fa-clock-rotate-left"></i> Pending Orders (คำสั่งซื้อขายล่วงหน้า)</span>
+                        <span class="mode-badge" style="background: rgba(255,255,255,0.05); border-color: var(--border-color); color: var(--text-primary);" id="pendingPosCount">0 ไม้</span>
+                    </div>
+                    <div class="table-container">
+                        <table id="pendingTable">
+                            <thead>
+                                <tr>
+                                    <th>Ticket ID</th>
+                                    <th>Direction</th>
+                                    <th>Type</th>
+                                    <th>Size (Lot)</th>
+                                    <th>Target Price</th>
+                                    <th>SL</th>
+                                    <th>TP</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- JS Populated -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Right Side: Config & Performance Chart & Terminal -->
+            <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                
+                <!-- Performance Equity Curve Chart -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title"><i class="fa-solid fa-square-trend-up"></i> Performance (เส้นการเติบโตพอร์ต / Equity Curve)</span>
+                    </div>
+                    <div style="height: 180px; position: relative; width: 100%;">
+                        <canvas id="equityChartCanvas"></canvas>
+                    </div>
+                </div>
+
+                <!-- Control Panel (Config) -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title"><i class="fa-solid fa-sliders"></i> Configuration (การตั้งค่าบอท)</span>
+                    </div>
+                    <form class="config-form" id="configForm" onsubmit="saveConfig(event)">
+                        <div class="form-group">
+                            <label for="configMode">Trading Mode</label>
+                            <select id="configMode" onchange="toggleModeSelect()">
+                                <option value="sim">Simulation Mode (จำลองความเสี่ยง)</option>
+                                <option value="mt5">MetaTrader 5 Live Mode (เงินจริง/เดโม)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="configRiskLot">Max Allowed Lot size (จำกัดความเสี่ยงล็อตสูงสุด)</label>
+                            <input type="number" id="configRiskLot" step="0.01" min="0.01" value="0.01">
+                        </div>
+                        
+                        <!-- NEW: Auto-Pilot Scheduler -->
+                        <div class="form-group" style="margin-top: 0.5rem; border-top: 1px solid var(--border-color); padding-top: 0.8rem;">
+                            <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;">
+                                <span><i class="fa-solid fa-robot" style="color: var(--accent-purple); margin-right: 0.4rem;"></i> Auto-Pilot (เทรดอัตโนมัติตามรอบ)</span>
+                                <input type="checkbox" id="configAutoPilot" style="width: 1.2rem; height: 1.2rem; cursor: pointer;" onchange="toggleSchedulerUI()">
+                            </label>
+                        </div>
+                        <div class="form-group" id="schedulerIntervalGroup">
+                            <label for="configInterval">Interval Cycle (ความถี่การรันบอท)</label>
+                            <select id="configInterval">
+                                <option value="1">ทุก 1 นาที (สำหรับทดสอบ)</option>
+                                <option value="3">ทุก 3 นาที</option>
+                                <option value="5">ทุก 5 นาที</option>
+                                <option value="15">ทุก 15 นาที</option>
+                                <option value="30">ทุก 30 นาที</option>
+                                <option value="60">ทุก 1 ชั่วโมง</option>
+                            </select>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-secondary">
+                            <i class="fa-solid fa-floppy-disk"></i> Save Configuration
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Logs Terminal -->
+                <div class="panel" style="flex: 1;">
+                    <div class="panel-header">
+                        <span class="panel-title"><i class="fa-solid fa-terminal"></i> AI Logging Terminal (บันทึกและวิเคราะห์)</span>
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="clearLogs()">
+                            <i class="fa-solid fa-trash"></i> ล้างจอ
+                        </button>
+                    </div>
+                    <div class="terminal-header">
+                        <div class="terminal-dots">
+                            <span class="terminal-dot dot-red"></span>
+                            <span class="terminal-dot dot-yellow"></span>
+                            <span class="terminal-dot dot-green"></span>
+                        </div>
+                        <span>maxplus-bot@orchestrator</span>
+                    </div>
+                    <div class="terminal-container" id="terminalLog">
+                        <div class="log-line log-info">บอทเตรียมพร้อม ยินดีต้อนรับสู่ MaxPlus Auto Trading Hub...</div>
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+        <!-- Full Width Closed Trades History -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title"><i class="fa-solid fa-list-check"></i> Closed Trades History (ประวัติการซื้อขายที่ปิดเสร็จสิ้น)</span>
+                <span class="mode-badge" style="background: rgba(255,255,255,0.05); border-color: var(--border-color); color: var(--text-primary);" id="closedTradesCount">0 ไม้</span>
+            </div>
+            <div class="table-container">
+                <table id="historyTable">
+                    <thead>
+                        <tr>
+                            <th>Ticket ID</th>
+                            <th>Direction</th>
+                            <th>Lot</th>
+                            <th>Entry Price</th>
+                            <th>Close Price</th>
+                            <th>SL</th>
+                            <th>TP</th>
+                            <th>P&L ($)</th>
+                            <th>Open Time</th>
+                            <th>Close Time</th>
+                            <th>Close Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- JS Populated -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        // Global variables for Charts
+        let equityChart = null;
+        let currentTvSymbol = "";
+
+        // Initialize Equity Chart.js Line Chart
+        function initEquityChart() {
+            const ctx = document.getElementById('equityChartCanvas').getContext('2d');
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Equity ($)',
+                        data: [],
+                        borderColor: '#818cf8',
+                        backgroundColor: 'rgba(129, 140, 248, 0.04)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.25,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    }, {
+                        label: 'Balance ($)',
+                        data: [],
+                        borderColor: '#10b981',
+                        borderDash: [5, 5],
+                        borderWidth: 1.5,
+                        fill: false,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: { color: '#94a3b8', font: { size: 9, family: 'Outfit' }, boxWidth: 12 }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { display: false }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                            ticks: { color: '#94a3b8', font: { size: 9, family: 'Outfit' } }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Render dynamic TradingView chart
+        function renderTradingViewChart(symbol) {
+            let tvSymbol = "OANDA:XAUUSD";
+            if (symbol === "BTCUSD" || symbol === "BTC-USD") {
+                tvSymbol = "BINANCE:BTCUSDT";
+            }
+            
+            // Avoid reloading iframe if symbol has not changed
+            if (currentTvSymbol === tvSymbol) return;
+            currentTvSymbol = tvSymbol;
+            
+            try {
+                if (typeof TradingView !== 'undefined') {
+                    new TradingView.widget({
+                        "autosize": true,
+                        "symbol": tvSymbol,
+                        "interval": "15",
+                        "timezone": "Etc/UTC",
+                        "theme": "dark",
+                        "style": "1",
+                        "locale": "th",
+                        "enable_publishing": false,
+                        "hide_side_toolbar": false,
+                        "allow_symbol_change": true,
+                        "container_id": "tradingview_chart"
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to load TradingView chart:", e);
+            }
+        }
+
+        // Toggle disabled styling on interval selection
+        function toggleSchedulerUI() {
+            const isAuto = document.getElementById('configAutoPilot').checked;
+            const intervalGroup = document.getElementById('schedulerIntervalGroup');
+            if (isAuto) {
+                intervalGroup.style.opacity = '1';
+                document.getElementById('configInterval').removeAttribute('disabled');
+            } else {
+                intervalGroup.style.opacity = '0.5';
+                document.getElementById('configInterval').setAttribute('disabled', 'true');
+            }
+        }
+
+        // Fetch dashboard status on load and periodically
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                // Update Badge Mode
+                const badge = document.getElementById('modeBadge');
+                if (data.mode === 'live') {
+                    badge.className = 'mode-badge live';
+                    badge.innerHTML = '<i class="fa-solid fa-circle-play"></i> <span>Live MT5 Mode</span>';
+                    document.getElementById('configMode').value = 'mt5';
+                } else {
+                    badge.className = 'mode-badge';
+                    badge.innerHTML = '<i class="fa-solid fa-flask"></i> <span>Simulation Mode</span>';
+                    document.getElementById('configMode').value = 'sim';
+                }
+                
+                // Update Balance Cards
+                document.getElementById('valBalance').innerText = `$${parseFloat(data.balance).toFixed(2)}`;
+                document.getElementById('valEquity').innerText = `$${parseFloat(data.equity).toFixed(2)}`;
+                
+                // P&L Color Scaling
+                const pnlVal = parseFloat(data.floating_pnl);
+                const cardPnl = document.getElementById('cardPnl');
+                const valPnl = document.getElementById('valPnl');
+                const valPnlDesc = document.getElementById('valPnlDesc');
+                
+                valPnl.innerText = (pnlVal >= 0 ? '+' : '') + `$${pnlVal.toFixed(2)}`;
+                if (pnlVal > 0) {
+                    cardPnl.className = 'stat-card profit';
+                    valPnl.className = 'stat-value txt-success';
+                    valPnlDesc.innerText = 'พอร์ตปัจจุบันกำลังได้กำไร';
+                } else if (pnlVal < 0) {
+                    cardPnl.className = 'stat-card loss';
+                    valPnl.className = 'stat-value txt-danger';
+                    valPnlDesc.innerText = 'พอร์ตปัจจุบันกำลังติดลบ';
+                } else {
+                    cardPnl.className = 'stat-card';
+                    valPnl.className = 'stat-value';
+                    valPnlDesc.innerText = 'ไม่มีออเดอร์ค้างอยู่';
+                }
+
+                // Update Asset Ticker Card
+                document.getElementById('lblSymbol').innerText = data.symbol;
+                document.getElementById('valPrice').innerText = parseFloat(data.current_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 3 });
+
+                // Render dynamic TradingView chart if symbol changed
+                renderTradingViewChart(data.symbol);
+
+                // Render Open Positions
+                const posBody = document.getElementById('positionsTable').querySelector('tbody');
+                posBody.innerHTML = '';
+                document.getElementById('openPosCount').innerText = `${data.open_positions.length} ไม้`;
+                if (data.open_positions.length === 0) {
+                    posBody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-box-open"></i> ไม่มีออเดอร์ที่เปิดถืออยู่</div></td></tr>`;
+                } else {
+                    data.open_positions.forEach(pos => {
+                        const sign = pos.pnl >= 0 ? '+' : '';
+                        const cl = pos.pnl >= 0 ? 'txt-success' : 'txt-danger';
+                        posBody.innerHTML += `
+                            <tr>
+                                <td>#${pos.id}</td>
+                                <td><span class="${pos.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${pos.direction}</span></td>
+                                <td>${parseFloat(pos.lot).toFixed(2)}</td>
+                                <td>${parseFloat(pos.entry_price).toFixed(2)}</td>
+                                <td>${pos.sl ? parseFloat(pos.sl).toFixed(2) : '-'}</td>
+                                <td>${pos.tp ? parseFloat(pos.tp).toFixed(2) : '-'}</td>
+                                <td class="${cl}">${sign}$${parseFloat(pos.pnl).toFixed(2)}</td>
+                                <td>
+                                    <button class="btn btn-danger" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="closePosition('${pos.id}')">
+                                        <i class="fa-solid fa-square-xmark"></i> Close
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                }
+
+                // Render Pending Orders
+                const pendingBody = document.getElementById('pendingTable').querySelector('tbody');
+                pendingBody.innerHTML = '';
+                document.getElementById('pendingPosCount').innerText = `${data.pending_orders.length} ไม้`;
+                if (data.pending_orders.length === 0) {
+                    pendingBody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><i class="fa-solid fa-clock-rotate-left"></i> ไม่มีออเดอร์ล่วงหน้าที่รอค้างอยู่ในโบรกเกอร์</div></td></tr>`;
+                } else {
+                    data.pending_orders.forEach(ord => {
+                        pendingBody.innerHTML += `
+                            <tr>
+                                <td>#${ord.id}</td>
+                                <td><span class="${ord.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${ord.direction}</span></td>
+                                <td>${ord.type}</td>
+                                <td>${parseFloat(ord.lot).toFixed(2)}</td>
+                                <td>${parseFloat(ord.entry_price).toFixed(2)}</td>
+                                <td>${ord.sl ? parseFloat(ord.sl).toFixed(2) : '-'}</td>
+                                <td>${ord.tp ? parseFloat(ord.tp).toFixed(2) : '-'}</td>
+                                <td>
+                                    <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="cancelOrder('${ord.id}')">
+                                        <i class="fa-solid fa-trash"></i> Cancel
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                }
+                
+                // Load scheduler configurations to form elements
+                document.getElementById('configRiskLot').value = data.max_lot;
+                document.getElementById('configAutoPilot').checked = data.auto_pilot;
+                document.getElementById('configInterval').value = data.interval_minutes;
+                
+                toggleSchedulerUI();
+                
+            } catch (err) {
+                console.error("Error fetching status dashboard:", err);
+            }
+        }
+
+        // Fetch logs from backend
+        async function fetchLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const data = await response.json();
+                const container = document.getElementById('terminalLog');
+                container.innerHTML = '';
+                data.logs.forEach(log => {
+                    let className = 'log-info';
+                    if (log.includes('WARNING')) className = 'log-warning';
+                    else if (log.includes('ERROR')) className = 'log-error';
+                    else if (log.includes('สำเร็จ') || log.includes('SUCCESS') || log.includes('เปิดออเดอร์ใหม่สำเร็จ')) className = 'log-success';
+                    
+                    container.innerHTML += `<div class="log-line ${className}">${escapeHtml(log)}</div>`;
+                });
+                container.scrollTop = container.scrollHeight;
+            } catch (err) {
+                console.error("Error fetching logs:", err);
+            }
+        }
+
+        // Fetch Closed Trade History
+        async function fetchHistory() {
+            try {
+                const response = await fetch('/api/history');
+                const data = await response.json();
+                
+                const historyBody = document.getElementById('historyTable').querySelector('tbody');
+                historyBody.innerHTML = '';
+                
+                const countBadge = document.getElementById('closedTradesCount');
+                if (data.status !== 'SUCCESS') {
+                    historyBody.innerHTML = `<tr><td colspan="11"><div class="empty-state"><i class="fa-solid fa-triangle-exclamation"></i> ไม่สามารถดึงประวัติได้: ${data.message || ''}</div></td></tr>`;
+                    countBadge.innerText = '0 ไม้';
+                    return;
+                }
+                
+                countBadge.innerText = `${data.history.length} ไม้`;
+                
+                if (data.history.length === 0) {
+                    historyBody.innerHTML = `<tr><td colspan="11"><div class="empty-state"><i class="fa-solid fa-list-check"></i> ยังไม่มีออเดอร์ที่ถูกปิดในประวัติการเทรด</div></td></tr>`;
+                    return;
+                }
+                
+                data.history.forEach(item => {
+                    const pnlVal = parseFloat(item.pnl);
+                    const cl = pnlVal >= 0 ? 'txt-success' : 'txt-danger';
+                    const sign = pnlVal >= 0 ? '+' : '';
+                    
+                    // Close reason badge styling
+                    let reasonBadge = `<span class="badge-buy" style="background: rgba(255,255,255,0.05); color: var(--text-primary); border-color: rgba(255,255,255,0.1);">${item.close_reason || 'MARKET'}</span>`;
+                    if (item.close_reason === 'SL') {
+                        reasonBadge = `<span class="badge-sell" style="background: rgba(239, 68, 68, 0.15); color: var(--danger-color); border-color: rgba(239,68,68,0.3);">Stop Loss</span>`;
+                    } else if (item.close_reason === 'TP') {
+                        reasonBadge = `<span class="badge-buy" style="background: rgba(16, 185, 129, 0.15); color: var(--success-color); border-color: rgba(16,185,129,0.3);">Take Profit</span>`;
+                    } else if (item.close_reason === 'STOP_OUT') {
+                        reasonBadge = `<span class="badge-sell" style="background: rgba(239, 68, 68, 0.3); color: #fff; border-color: var(--danger-color);">STOP OUT</span>`;
+                    } else if (item.close_reason === 'BOT_CLOSE') {
+                        reasonBadge = `<span class="badge-buy" style="background: rgba(129, 140, 248, 0.15); color: var(--accent-purple); border-color: rgba(129,140,248,0.3);">AI Close</span>`;
+                    }
+                    
+                    historyBody.innerHTML += `
+                        <tr>
+                            <td>#${item.id}</td>
+                            <td><span class="${item.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${item.direction}</span></td>
+                            <td>${parseFloat(item.lot).toFixed(2)}</td>
+                            <td>${parseFloat(item.entry_price).toFixed(2)}</td>
+                            <td>${parseFloat(item.close_price).toFixed(2)}</td>
+                            <td>${item.sl ? parseFloat(item.sl).toFixed(2) : '-'}</td>
+                            <td>${item.tp ? parseFloat(item.tp).toFixed(2) : '-'}</td>
+                            <td class="${cl}">${sign}$${pnlVal.toFixed(2)}</td>
+                            <td style="font-size: 0.8rem; color: var(--text-secondary);">${item.open_time || '-'}</td>
+                            <td style="font-size: 0.8rem; color: var(--text-secondary);">${item.close_time || '-'}</td>
+                            <td>${reasonBadge}</td>
+                        </tr>
+                    `;
+                });
+            } catch (err) {
+                console.error("Error fetching history:", err);
+            }
+        }
+
+        // Render balance and equity chart
+        async function fetchEquityChart() {
+            if (!equityChart) {
+                initEquityChart();
+            }
+            try {
+                const response = await fetch('/api/equity_chart');
+                const data = await response.json();
+                
+                if (data.status === 'SUCCESS' && data.points.length > 0) {
+                    const labels = data.points.map(p => p.timestamp);
+                    const equities = data.points.map(p => p.equity);
+                    const balances = data.points.map(p => p.balance);
+                    
+                    equityChart.data.labels = labels;
+                    equityChart.data.datasets[0].data = equities;
+                    equityChart.data.datasets[1].data = balances;
+                    equityChart.update();
+                }
+            } catch (err) {
+                console.error("Error fetching equity chart:", err);
+            }
+        }
+
+        // Trigger loop sync cycle manual
+        async function triggerRunCycle() {
+            const btn = document.getElementById('runCycleBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Running Cycle...';
+            
+            appendTerminal('INFO', '--- สั่งให้บอทเริ่มการวิเคราะห์และตรวจสอบออเดอร์ผ่าน Web UI ---');
+            
+            try {
+                const response = await fetch('/api/run', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'SUCCESS') {
+                    appendTerminal('SUCCESS', 'บอทรันรอบการประเมินและการเทรดเสร็จสิ้นแล้ว');
+                } else {
+                    appendTerminal('ERROR', `เกิดข้อผิดพลาดในการประมวลผล: ${result.message}`);
+                }
+                await fetchStatus();
+                await fetchLogs();
+                await fetchHistory();
+                await fetchEquityChart();
+            } catch (err) {
+                console.error("Error executing cycle:", err);
+                appendTerminal('ERROR', 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์บอทได้');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-play"></i> Run Sync Cycle';
+            }
+        }
+
+        // Form save config settings
+        async function saveConfig(e) {
+            e.preventDefault();
+            const mode = document.getElementById('configMode').value;
+            const max_lot = document.getElementById('configRiskLot').value;
+            const auto_pilot = document.getElementById('configAutoPilot').checked;
+            const interval_minutes = document.getElementById('configInterval').value;
+            
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode, max_lot, auto_pilot, interval_minutes })
+                });
+                const result = await response.json();
+                if (result.status === 'SUCCESS') {
+                    const statusText = auto_pilot ? `เปิดรันออโต้รอบละ ${interval_minutes} นาที` : 'ปิดรันออโต้';
+                    appendTerminal('SUCCESS', `บันทึกการตั้งค่าสำเร็จ! โหมด: ${mode.upper()} (จำกัดล็อต ${max_lot}, Auto-Pilot: ${statusText})`);
+                    fetchStatus();
+                    fetchHistory();
+                    fetchEquityChart();
+                } else {
+                    appendTerminal('ERROR', 'บันทึกการตั้งค่าล้มเหลว');
+                }
+            } catch (err) {
+                console.error("Error saving config:", err);
+            }
+        }
+
+        // Close position request
+        async function closePosition(id) {
+            if(!confirm(`คุณแน่ใจหรือไม่ที่จะทำการปิดออเดอร์ Ticket #${id} ทันที?`)) return;
+            appendTerminal('WARNING', `กำลังพยายามสั่ง CLOSE ออเดอร์ #${id} จากแผงหน้าเว็บ...`);
+            try {
+                const response = await fetch('/api/close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                const result = await response.json();
+                if (result.status === 'SUCCESS') {
+                    appendTerminal('SUCCESS', `ส่งคำสั่งปิดออเดอร์ Ticket #${id} สำเร็จ!`);
+                    fetchStatus();
+                    fetchLogs();
+                    fetchHistory();
+                    fetchEquityChart();
+                } else {
+                    appendTerminal('ERROR', `ปิดออเดอร์ล้มเหลว: ${result.message}`);
+                }
+            } catch (err) {
+                console.error("Error closing position:", err);
+            }
+        }
+
+        // Cancel order request
+        async function cancelOrder(id) {
+            if(!confirm(`คุณแน่ใจหรือไม่ที่จะทำการยกเลิกคำสั่งล่วงหน้า Ticket #${id}?`)) return;
+            appendTerminal('WARNING', `กำลังพยายามยกเลิกคำสั่งล่วงหน้า #${id}...`);
+            try {
+                const response = await fetch('/api/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                const result = await response.json();
+                if (result.status === 'SUCCESS') {
+                    appendTerminal('SUCCESS', `ยกเลิกคำสั่งล่วงหน้า #${id} เรียบร้อย`);
+                    fetchStatus();
+                    fetchLogs();
+                } else {
+                    appendTerminal('ERROR', `ยกเลิกคำสั่งล่วงหน้าล้มเหลว: ${result.message}`);
+                }
+            } catch (err) {
+                console.error("Error cancelling order:", err);
+            }
+        }
+
+        // Helpers
+        function clearLogs() {
+            document.getElementById('terminalLog').innerHTML = '<div class="log-line log-info">ล้างจอเสร็จสิ้น รอข้อมูลบันทึกรอบใหม่...</div>';
+        }
+
+        function appendTerminal(type, message) {
+            const container = document.getElementById('terminalLog');
+            const timeStr = new Date().toLocaleTimeString();
+            let cl = 'log-info';
+            if (type === 'WARNING') cl = 'log-warning';
+            else if (type === 'ERROR') cl = 'log-error';
+            else if (type === 'SUCCESS') cl = 'log-success';
+            
+            container.innerHTML += `<div class="log-line ${cl}">${timeStr} - ${type} - ${message}</div>`;
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+            return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+        }
+
+        function toggleModeSelect() {
+            // Trigger load to refresh UI assets quickly
+            setTimeout(() => {
+                fetchStatus();
+                fetchHistory();
+                fetchEquityChart();
+            }, 100);
+        }
+
+        // Initial loading of views
+        async function init() {
+            await fetchStatus();
+            await fetchLogs();
+            await fetchHistory();
+            await fetchEquityChart();
+        }
+        
+        init();
+
+        // Auto Refresh dashboard status
+        setInterval(fetchStatus, 3000);
+        setInterval(fetchLogs, 5000);
+        setInterval(fetchHistory, 10000);       // ประวัติอัปเดตทุก 10 วินาที
+        setInterval(fetchEquityChart, 15000);   // กราฟพอร์ตอัปเดตทุก 15 วินาที
+    </script>
+</body>
+</html>
