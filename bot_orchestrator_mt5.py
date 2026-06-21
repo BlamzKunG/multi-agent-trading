@@ -322,13 +322,30 @@ class MT5TradingBotOrchestrator:
                     new_sl = decision.get("new_sl")
                     new_tp = decision.get("new_tp")
                     logging.info(f"กำลังขยับจุดตามสัญญาณ Trailing: SL {new_sl} | TP {new_tp}...")
-                    self.mt5_bridge.modify_position(ticket_id, new_sl=new_sl, new_tp=new_tp)
-                    msg = (
-                        f"📈 **[MT5 Live - Trailing Stop]**\n"
-                        f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
-                        f"**Action:** Move SL -> {new_sl or '-'} | TP -> {new_tp or '-'}\n"
-                        f"**Reason:** {reason}"
-                    )
+                    res = self.mt5_bridge.modify_position(ticket_id, new_sl=new_sl, new_tp=new_tp)
+                    
+                    if res.get("status") == "SUCCESS":
+                        final_sl = res.get("final_sl", new_sl)
+                        final_tp = res.get("final_tp", new_tp)
+                        healing_note = ""
+                        if (new_sl is not None and abs(float(final_sl) - float(new_sl)) > 0.001) or \
+                           (new_tp is not None and abs(float(final_tp) - float(new_tp)) > 0.001):
+                            healing_note = f"\n⚠️ *[Self-Healing] ปรับแต่งจุดอัตโนมัติให้สอดคล้องกับทิศทางและระยะห่างขั้นต่ำโบรกเกอร์ (Stops Level)*"
+                        
+                        msg = (
+                            f"📈 **[MT5 Live - Trailing Stop Success]**\n"
+                            f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
+                            f"**Action:** Move SL -> {final_sl or '-'} | TP -> {final_tp or '-'}{healing_note}\n"
+                            f"**Reason:** {reason}"
+                        )
+                    else:
+                        msg = (
+                            f"❌ **[MT5 Live - Trailing Stop Failed]**\n"
+                            f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
+                            f"**Action Attempt:** Move SL -> {new_sl or '-'} | TP -> {new_tp or '-'}\n"
+                            f"**Error:** {res.get('message', 'Unknown Error')}\n"
+                            f"**Reason:** {reason}"
+                        )
                     self.send_discord_message(msg)
                 else:
                     logging.info(f"ถือครองออเดอร์ {ticket_id} ต่อไปตามเงื่อนไขเดิม (HOLD)")

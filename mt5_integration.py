@@ -302,7 +302,7 @@ class MT5Integration:
         return {"status": "SUCCESS"}
 
     def modify_position(self, ticket, new_sl=None, new_tp=None):
-        """แก้ไขจุด SL / TP ของออเดอร์ที่มีอยู่"""
+        """แก้ไขจุด SL / TP ของออเดอร์ที่มีอยู่ พร้อมตรวจสอบความปลอดภัยทิศทางและ Stops Level"""
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
@@ -314,21 +314,74 @@ class MT5Integration:
         symbol = pos.symbol
         sym_info = mt5.symbol_info(symbol)
         
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            return {"status": "ERROR", "message": "ไม่สามารถดึงข้อมูลราคาล่าสุดได้"}
+            
+        # หาขอบเขตความกว้างขั้นต่ำของโบรกเกอร์ (Stops Level)
+        point = sym_info.point if sym_info else 0.00001
+        stops_level_points = sym_info.trade_stops_level if sym_info else 30
+        # บางโบรกเกอร์ส่งค่า trade_stops_level มาเป็น 0 แต่จริง ๆ มีการจำกัด ให้กันเหนียวไว้ที่อย่างน้อย 30 points
+        if stops_level_points == 0:
+            stops_level_points = 30
+        stops_limit = stops_level_points * point
+        
         final_sl = pos.sl
         final_tp = pos.tp
         
+        # ตรวจสอบทิศทางและระยะห่างของ SL/TP
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            # สำหรับ BUY: SL ต้องอยู่ต่ำกว่าราคาปัจจุบัน (Bid) และ TP ต้องอยู่สูงกว่าราคาปัจจุบัน
+            current_price = tick.bid
+            
+            if new_sl is not None:
+                requested_sl = float(new_sl)
+                max_valid_sl = current_price - stops_limit
+                if requested_sl > max_valid_sl:
+                    logging.warning(f"⚠️ [Self-Healing] SL ที่ AI ขอมา ({requested_sl}) สูงกว่าขีดจำกัดสูงสุดสำหรับ BUY ({max_valid_sl}) - ปรับลงเป็น {max_valid_sl}")
+                    final_sl = max_valid_sl
+                else:
+                    final_sl = requested_sl
+                    
+            if new_tp is not None:
+                requested_tp = float(new_tp)
+                min_valid_tp = current_price + stops_limit
+                if requested_tp < min_valid_tp:
+                    logging.warning(f"⚠️ [Self-Healing] TP ที่ AI ขอมา ({requested_tp}) ต่ำกว่าขีดจำกัดต่ำสุดสำหรับ BUY ({min_valid_tp}) - ปรับขึ้นเป็น {min_valid_tp}")
+                    final_tp = min_valid_tp
+                else:
+                    final_tp = requested_tp
+                    
+        elif pos.type == mt5.POSITION_TYPE_SELL:
+            # สำหรับ SELL: SL ต้องอยู่สูงกว่าราคาปัจจุบัน (Ask) และ TP ต้องอยู่ต่ำกว่าราคาปัจจุบัน
+            current_price = tick.ask
+            
+            if new_sl is not None:
+                requested_sl = float(new_sl)
+                min_valid_sl = current_price + stops_limit
+                if requested_sl < min_valid_sl:
+                    logging.warning(f"⚠️ [Self-Healing] SL ที่ AI ขอมา ({requested_sl}) ต่ำกว่าขีดจำกัดต่ำสุดสำหรับ SELL ({min_valid_sl}) - ปรับขึ้นเป็น {min_valid_sl}")
+                    final_sl = min_valid_sl
+                else:
+                    final_sl = requested_sl
+                    
+            if new_tp is not None:
+                requested_tp = float(new_tp)
+                max_valid_tp = current_price - stops_limit
+                if requested_tp > max_valid_tp:
+                    logging.warning(f"⚠️ [Self-Healing] TP ที่ AI ขอมา ({requested_tp}) สูงกว่าขีดจำกัดสูงสุดสำหรับ SELL ({max_valid_tp}) - ปรับลงเป็น {max_valid_tp}")
+                    final_tp = max_valid_tp
+                else:
+                    final_tp = requested_tp
+
+        # ทำการปัดเศษราคาให้ตรงกับ Tick Size และจำนวนทศนิยมของสัญลักษณ์
         if sym_info:
             digits = sym_info.digits
             tick_size = sym_info.trade_tick_size
-            if new_sl is not None:
-                final_sl = round(round(float(new_sl) / tick_size) * tick_size, digits)
-            if new_tp is not None:
-                final_tp = round(round(float(new_tp) / tick_size) * tick_size, digits)
-        else:
-            if new_sl is not None:
-                final_sl = float(new_sl)
-            if new_tp is not None:
-                final_tp = float(new_tp)
+            if final_sl > 0:
+                final_sl = round(round(final_sl / tick_size) * tick_size, digits)
+            if final_tp > 0:
+                final_tp = round(round(final_tp / tick_size) * tick_size, digits)
                 
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
@@ -343,7 +396,7 @@ class MT5Integration:
             return {"status": "FAILED", "message": result.comment}
             
         logging.info(f"แก้ไข SL/TP ออเดอร์ {ticket} สำเร็จ | SL ใหม่: {final_sl}, TP ใหม่: {final_tp}")
-        return {"status": "SUCCESS"}
+        return {"status": "SUCCESS", "final_sl": final_sl, "final_tp": final_tp}
 
     def get_pending_orders(self, symbol="XAUUSD"):
         """ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) ที่ยังไม่ถูกจับคู่"""
