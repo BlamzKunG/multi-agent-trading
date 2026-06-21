@@ -82,6 +82,7 @@ class TradingAgents:
                         continue
                         
                     response.raise_for_status()
+                    response.encoding = 'utf-8'
                     result = response.json()
                     
                     if is_claude:

@@ -19,6 +19,20 @@ class MT5TradingBotOrchestrator:
         self.agents = TradingAgents(api_key=api_key)
         self.symbol = "XAUUSD"
 
+    def send_discord_message(self, message):
+        """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
+        import requests
+        webhook_url = os.environ.get(
+            "DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/1490619446287401121/-3q8Jfe1Hu49gXwL00ZKJkOHjO5CmMQKMe9ixm22YRmIwC0Czy9jV6EhI4muoFqn6JXC"
+        )
+        try:
+            payload = {"content": message}
+            response = requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            logging.error(f"ไม่สามารถส่งการแจ้งเตือนไปยัง Discord ได้: {e}")
+
     def is_gold_market_open(self):
         """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดเสาร์-อาทิตย์หรือไม่ (อิงเวลา UTC)"""
         now_utc = datetime.now(timezone.utc)
@@ -205,8 +219,28 @@ class MT5TradingBotOrchestrator:
                 logging.info(f"กำลังส่งคำสั่งเทรด: {action} ขนาด {lot} Lot (เป้าหมายราคาเข้า: {entry})...")
                 res = self.mt5_bridge.open_position(direction=action, lot=lot, sl=sl, tp=tp, entry=entry, symbol=self.symbol)
                 logging.info(f"ผลการทำรายการบนโบรกเกอร์: {res}")
+                
+                # ส่งแจ้งเตือน Discord
+                status_text = "ยิงออเดอร์สำเร็จ" if res.get("status") == "SUCCESS" else f"ล้มเหลว ({res.get('message', '')})"
+                msg = (
+                    f"🟢 **[MT5 Live - New Position]**\n"
+                    f"**Asset:** {self.symbol} | **Action:** {action}\n"
+                    f"**Lot Size:** {lot:.2f} | **Target Entry:** {entry or 'Market'}\n"
+                    f"**Current Price:** {current_price:.2f} USD\n"
+                    f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
+                    f"**Broker Result:** {status_text}\n"
+                    f"**Reason:** {reason}"
+                )
+                self.send_discord_message(msg)
             else:
                 logging.info("AI ประเมินว่ายังไม่ควรกระทำการใดๆ ให้รอดูสัญญาณต่อไป (HOLD)")
+                # ส่งแจ้งเตือน Discord สำหรับ HOLD
+                msg = (
+                    f"🟡 **[MT5 Live - Analyst Alert]**\n"
+                    f"**Asset:** {self.symbol} | **Action:** HOLD (รอดูสัญญาณ)\n"
+                    f"**Reason:** {reason}"
+                )
+                self.send_discord_message(msg)
                 
         elif pending_orders and not open_positions:
             # ----------------------------------------------------
@@ -239,6 +273,13 @@ class MT5TradingBotOrchestrator:
                 if action == "CLOSE":
                     logging.info(f"กำลังยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {order_ticket}...")
                     self.mt5_bridge.cancel_pending_order(order_ticket)
+                    msg = (
+                        f"❌ **[MT5 Live - Cancel Pending]**\n"
+                        f"**Order ID:** #{order_ticket} | **Asset:** {self.symbol}\n"
+                        f"**Action:** CANCEL PENDING ORDER\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 else:
                     logging.info(f"คงคำสั่งล่วงหน้า Ticket {order_ticket} ไว้ตามเดิม (HOLD)")
                     
@@ -270,14 +311,35 @@ class MT5TradingBotOrchestrator:
                 if action == "CLOSE":
                     logging.info(f"กำลังส่งคำสั่งปิดออเดอร์ Ticket {ticket_id} ทันที...")
                     self.mt5_bridge.close_position(ticket_id, self.symbol)
+                    msg = (
+                        f"🔴 **[MT5 Live - Close Trade]**\n"
+                        f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** CLOSE POSITION (สั่งปิดออเดอร์)\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 elif action == "BREAK_EVEN":
                     logging.info(f"กำลังเลื่อน Stop Loss ออเดอร์ {ticket_id} กันหน้าทุนที่ {pos['entry_price']}...")
                     self.mt5_bridge.modify_position(ticket_id, new_sl=pos['entry_price'])
+                    msg = (
+                        f"🛡️ **[MT5 Live - Break Even]**\n"
+                        f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Move SL to Entry ({pos['entry_price']:.2f})\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 elif action == "TRAILING_STOP":
                     new_sl = decision.get("new_sl")
                     new_tp = decision.get("new_tp")
                     logging.info(f"กำลังขยับจุดตามสัญญาณ Trailing: SL {new_sl} | TP {new_tp}...")
                     self.mt5_bridge.modify_position(ticket_id, new_sl=new_sl, new_tp=new_tp)
+                    msg = (
+                        f"📈 **[MT5 Live - Trailing Stop]**\n"
+                        f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Move SL -> {new_sl or '-'} | TP -> {new_tp or '-'}\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 else:
                     logging.info(f"ถือครองออเดอร์ {ticket_id} ต่อไปตามเงื่อนไขเดิม (HOLD)")
                     

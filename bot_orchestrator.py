@@ -22,6 +22,20 @@ class TradingBotOrchestrator:
         self.agents = TradingAgents(api_key=api_key)
         self.symbol = "XAUUSD"
 
+    def send_discord_message(self, message):
+        """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
+        import requests
+        webhook_url = os.environ.get(
+            "DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/1490619446287401121/-3q8Jfe1Hu49gXwL00ZKJkOHjO5CmMQKMe9ixm22YRmIwC0Czy9jV6EhI4muoFqn6JXC"
+        )
+        try:
+            payload = {"content": message}
+            response = requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            logging.error(f"ไม่สามารถส่งการแจ้งเตือนไปยัง Discord ได้: {e}")
+
     def is_gold_market_open(self):
         """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดเสาร์-อาทิตย์หรือไม่ (อิงเวลา UTC)"""
         now_utc = datetime.now(timezone.utc)
@@ -187,6 +201,7 @@ class TradingBotOrchestrator:
             
             # ดำเนินการยิงออเดอร์ตามที่ AI ตัดสินใจ
             action = decision.get("action")
+            reason = decision.get("reasoning")
             if action in ["BUY", "SELL"]:
                 lot = decision.get("lot", 0.01)
                 sl = decision.get("sl")
@@ -203,8 +218,27 @@ class TradingBotOrchestrator:
                     
                 res = self.exchange.open_position(direction=action, lot=lot, sl=sl, tp=tp)
                 logging.info(f"ผลลัพธ์การดำเนินการ: {res}")
+                
+                # ส่งแจ้งเตือน Discord
+                status_text = "เปิดออเดอร์ใหม่สำเร็จ" if res.get("status") == "SUCCESS" else f"ล้มเหลว ({res.get('message', '')})"
+                msg = (
+                    f"🟢 **[Sim Mode - New Position]**\n"
+                    f"**Asset:** {self.symbol} | **Action:** {action}\n"
+                    f"**Lot Size:** {lot:.2f} | **Entry Price:** {current_price:.2f}\n"
+                    f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
+                    f"**Result:** {status_text}\n"
+                    f"**Reason:** {reason}"
+                )
+                self.send_discord_message(msg)
             else:
                 logging.info("AI ตัดสินใจให้รอดูสถานการณ์ไปก่อน (HOLD)")
+                # ส่งแจ้งเตือน Discord สำหรับ HOLD
+                msg = (
+                    f"🟡 **[Sim Mode - Analyst Alert]**\n"
+                    f"**Asset:** {self.symbol} | **Action:** HOLD (รอดูสัญญาณ)\n"
+                    f"**Reason:** {reason}"
+                )
+                self.send_discord_message(msg)
                 
         else:
             # ----------------------------------------------------
@@ -231,13 +265,33 @@ class TradingBotOrchestrator:
                 
                 if action == "CLOSE":
                     self.exchange.close_position(pos_id)
+                    msg = (
+                        f"🔴 **[Sim Mode - Close Trade]**\n"
+                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** CLOSE POSITION (สั่งปิดออเดอร์)\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 elif action == "BREAK_EVEN":
-                    # ตั้งจุด SL เท่ากับราคาเปิดออเดอร์
                     self.exchange.modify_sl_tp(pos_id, new_sl=pos['entry_price'])
+                    msg = (
+                        f"🛡️ **[Sim Mode - Break Even]**\n"
+                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Move SL to Entry ({pos['entry_price']:.2f})\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 elif action == "TRAILING_STOP":
                     new_sl = decision.get("new_sl")
                     new_tp = decision.get("new_tp")
                     self.exchange.modify_sl_tp(pos_id, new_sl=new_sl, new_tp=new_tp)
+                    msg = (
+                        f"📈 **[Sim Mode - Trailing Stop]**\n"
+                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Move SL -> {new_sl or '-'} | TP -> {new_tp or '-'}\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
                 else:
                     logging.info(f"ถือออเดอร์ {pos_id} ต่อไปตามเงื่อนไขเดิม (HOLD)")
                     
