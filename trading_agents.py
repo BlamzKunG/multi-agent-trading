@@ -1,6 +1,7 @@
 import requests
 import json
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -17,32 +18,57 @@ class TradingAgents:
             "Content-Type": "application/json"
         }
         
-    def _call_llm(self, model, messages, json_response=True):
-        """ส่งคำขอไปยัง MaxPlus AI API"""
-        url = f"{self.base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2  # ใช้ temp ต่ำเพื่อลดความเพ้อเจ้อ (Hallucinations)
-        }
-        
-        # หากระบบปลายทางรองรับและบังคับใช้ JSON
-        if json_response:
-            payload["response_format"] = {"type": "json_object"}
+    def _call_llm(self, model, messages, json_response=True, fallbacks=None):
+        """ส่งคำขอไปยัง MaxPlus AI API พร้อมระบบ retry และ fallback เมื่อเกิดข้อผิดพลาดชั่วคราว (เช่น 503)"""
+        if fallbacks is None:
+            fallbacks = []
             
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=60)
-            response.raise_for_status()
-            result = response.json()
-            content = result['choices'][0]['message']['content']
+        models_to_try = [model] + fallbacks
+        
+        for idx, current_model in enumerate(models_to_try):
+            url = f"{self.base_url}/chat/completions"
+            payload = {
+                "model": current_model,
+                "messages": messages,
+                "temperature": 0.2  # ใช้ temp ต่ำเพื่อลดความเพ้อเจ้อ (Hallucinations)
+            }
             
             if json_response:
-                return json.loads(content)
-            return content
+                payload["response_format"] = {"type": "json_object"}
+                
+            max_retries = 3
+            backoff_factor = 2
             
-        except Exception as e:
-            logging.error(f"เกิดข้อผิดพลาดในการเรียกใช้ LLM ({model}): {e}")
-            return None
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+                    
+                    # หากเป็นข้อผิดพลาดฝั่งเซิร์ฟเวอร์ชั่วคราว หรือ อัตราการยิงเกินกำหนด ให้ทำ retry
+                    if response.status_code in [429, 500, 502, 503, 504]:
+                        logging.warning(f"เรียกใช้ LLM ({current_model}) ล้มเหลวด้วยรหัส HTTP {response.status_code}. กำลังลองใหม่รอบที่ {attempt + 1}/{max_retries}...")
+                        time.sleep(backoff_factor ** attempt)
+                        continue
+                        
+                    response.raise_for_status()
+                    result = response.json()
+                    content = result['choices'][0]['message']['content']
+                    
+                    if json_response:
+                        return json.loads(content)
+                    return content
+                    
+                except Exception as e:
+                    logging.warning(f"เกิดข้อผิดพลาดในการเชื่อมต่อ {current_model} (รอบที่ {attempt + 1}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(backoff_factor ** attempt)
+                    else:
+                        logging.error(f"พยายามใช้โมเดล {current_model} ครบ {max_retries} ครั้งแล้วแต่ล้มเหลว")
+            
+            # ถ้าโมเดลหลักขัดข้อง และยังมีโมเดลสำรองในลิสต์ ให้สลับไปใช้
+            if idx < len(models_to_try) - 1:
+                logging.warning(f"สลับเปลี่ยนไปเรียกใช้โมเดลสำรองลำดับถัดไป: {models_to_try[idx+1]}")
+                
+        return None
 
     def analyze_market(self, market_data_str, balance, symbol="XAUUSD", leverage=100.0):
         """
@@ -79,7 +105,7 @@ class TradingAgents:
         ]
         
         logging.info(f"ส่งข้อมูลให้ Analyst Agent วิเคราะห์โอกาสเข้าเทรด {symbol}...")
-        return self._call_llm(model, messages, json_response=True)
+        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-4o", "claude-haiku-4-5"])
 
     def manage_position(self, position_details, current_price, balance, symbol="XAUUSD"):
         """
@@ -120,4 +146,4 @@ class TradingAgents:
         ]
         
         logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol}...")
-        return self._call_llm(model, messages, json_response=True)
+        return self._call_llm(model, messages, json_response=True, fallbacks=["gpt-4o-mini", "claude-sonnet-4-6"])
