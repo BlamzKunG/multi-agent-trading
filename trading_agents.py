@@ -19,31 +19,62 @@ class TradingAgents:
         }
         
     def _call_llm(self, model, messages, json_response=True, fallbacks=None):
-        """ส่งคำขอไปยัง MaxPlus AI API พร้อมระบบ retry และ fallback เมื่อเกิดข้อผิดพลาดชั่วคราว (เช่น 503)"""
+        """ส่งคำขอไปยัง MaxPlus AI API พร้อมรองรับทั้ง Anthropic Protocol และ OpenAI Protocol อัตโนมัติ"""
         if fallbacks is None:
             fallbacks = []
             
         models_to_try = [model] + fallbacks
         
         for idx, current_model in enumerate(models_to_try):
-            url = f"{self.base_url}/chat/completions"
-            payload = {
-                "model": current_model,
-                "messages": messages,
-                "temperature": 0.2  # ใช้ temp ต่ำเพื่อลดความเพ้อเจ้อ (Hallucinations)
-            }
+            is_claude = "claude" in current_model.lower()
             
-            if json_response:
-                payload["response_format"] = {"type": "json_object"}
+            if is_claude:
+                # 📌 ใช้ Anthropic Messages API (/v1/messages)
+                url = f"{self.base_url}/messages"
+                headers = {
+                    **self.headers,
+                    "anthropic-version": "2023-06-01"
+                }
                 
+                # แยก System Prompt ออกตามมาตรฐานของ Anthropic
+                system_text = None
+                user_messages = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_text = msg["content"]
+                    else:
+                        user_messages.append({
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        })
+                        
+                payload = {
+                    "model": current_model,
+                    "messages": user_messages,
+                    "temperature": 0.2,
+                    "max_tokens": 4096  # จำเป็นสำหรับ Anthropic
+                }
+                if system_text:
+                    payload["system"] = system_text
+            else:
+                # 📌 ใช้ OpenAI Chat Completions API (/v1/chat/completions)
+                url = f"{self.base_url}/chat/completions"
+                headers = self.headers
+                payload = {
+                    "model": current_model,
+                    "messages": messages,
+                    "temperature": 0.2
+                }
+                if json_response:
+                    payload["response_format"] = {"type": "json_object"}
+            
             max_retries = 3
             backoff_factor = 2
             
             for attempt in range(max_retries):
                 try:
-                    response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+                    response = requests.post(url, headers=headers, json=payload, timeout=30)
                     
-                    # หากเป็นข้อผิดพลาดฝั่งเซิร์ฟเวอร์ชั่วคราว หรือ อัตราการยิงเกินกำหนด ให้ทำ retry
                     if response.status_code in [429, 500, 502, 503, 504]:
                         logging.warning(f"เรียกใช้ LLM ({current_model}) ล้มเหลวด้วยรหัส HTTP {response.status_code}. กำลังลองใหม่รอบที่ {attempt + 1}/{max_retries}...")
                         time.sleep(backoff_factor ** attempt)
@@ -51,10 +82,29 @@ class TradingAgents:
                         
                     response.raise_for_status()
                     result = response.json()
-                    content = result['choices'][0]['message']['content']
+                    
+                    if is_claude:
+                        content = result['content'][0]['text']
+                    else:
+                        content = result['choices'][0]['message']['content']
                     
                     if json_response:
-                        return json.loads(content)
+                        try:
+                            return json.loads(content)
+                        except Exception as json_err:
+                            # ป้องกันกรณี LLM ตอบกลับมาเป็น markdown code block ครอบ JSON
+                            cleaned_content = content.strip()
+                            if cleaned_content.startswith("```json"):
+                                cleaned_content = cleaned_content[7:]
+                            elif cleaned_content.startswith("```"):
+                                cleaned_content = cleaned_content[3:]
+                            if cleaned_content.endswith("```"):
+                                cleaned_content = cleaned_content[:-3]
+                            cleaned_content = cleaned_content.strip()
+                            try:
+                                return json.loads(cleaned_content)
+                            except Exception:
+                                raise json_err
                     return content
                     
                 except Exception as e:
