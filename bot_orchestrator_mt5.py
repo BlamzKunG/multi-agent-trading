@@ -22,10 +22,10 @@ class MT5TradingBotOrchestrator:
     def send_discord_message(self, message):
         """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
         import requests
-        webhook_url = os.environ.get(
-            "DISCORD_WEBHOOK_URL",
-            "https://discord.com/api/webhooks/1490619446287401121/-3q8Jfe1Hu49gXwL00ZKJkOHjO5CmMQKMe9ixm22YRmIwC0Czy9jV6EhI4muoFqn6JXC"
-        )
+        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+        if not webhook_url:
+            logging.warning("ไม่พบการกำหนดค่า DISCORD_WEBHOOK_URL ใน Environment Variables ระบบจะงดส่งแจ้งเตือนทาง Discord")
+            return
         try:
             payload = {"content": message}
             response = requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
@@ -183,14 +183,18 @@ class MT5TradingBotOrchestrator:
             df_15m = self.mt5_bridge.get_historical_data(self.symbol, timeframe="15m", num_candles=100)
             df_1h = self.mt5_bridge.get_historical_data(self.symbol, timeframe="1h", num_candles=100)
             
-            market_summary = self._prepare_market_summary(df_5m, df_15m, df_1h, current_price)
+            # ดึงค่า spread ล่าสุดจากราคาที่โบรกเกอร์ส่งมา
+            spread = price_info.get("spread", 0.0)
             
-            # ส่งข้อมูลให้ AI วิเคราะห์การเทรด
+            # ส่งข้อมูลให้ AI วิเคราะห์การเทรดด้วยระบบ Multi-Agent M5 Price Action
             decision = self.agents.analyze_market(
-                market_data_str=market_summary,
+                df_5m=df_5m,
+                df_15m=df_15m,
+                df_1h=df_1h,
                 balance=balance,
                 symbol=self.symbol,
-                leverage=100.0
+                leverage=100.0,
+                spread=spread
             )
             
             if not decision:
@@ -285,14 +289,58 @@ class MT5TradingBotOrchestrator:
                     
         else:
             # ----------------------------------------------------
-            # 📌 สาขา B2: มีออเดอร์ค้างอยู่ (มีผลกำไรขาดทุนวิ่งอยู่) -> ส่งให้ AI คุมความเสี่ยงหน้าไม้
+            # 📌 สาขา B2: มีออเดอร์ค้างอยู่ (มีผลกำไรขาดทุนวิ่งอยู่) -> จัดการ Simple Trailing Stop (Python) และเช็ค Reversal (LLM)
             # ----------------------------------------------------
             logging.info(f"มีออเดอร์ค้างอยู่ (Active Position) ทั้งหมด {len(open_positions)} ไม้")
             
+            # กำหนดระยะสเปรดตามประเภทสินทรัพย์
+            if "BTC" in self.symbol.upper():
+                activation_dist = 50.0
+                trail_dist = 50.0
+            else:  # XAUUSD
+                activation_dist = 2.0
+                trail_dist = 2.0
+                
             for pos in open_positions:
                 ticket_id = pos['id']
+                direction = pos['direction']
+                entry_price = float(pos['entry_price'])
+                current_sl = pos['sl']
                 
-                # ส่งสถานะออเดอร์ให้ AI ประเมินการขยับจุดทำกำไร/ขาดทุน
+                # 1. จัดการ Simple Trailing Stop อัตโนมัติทางฝั่ง Python บนพอร์ตจริง
+                trail_updated = False
+                new_sl = None
+                
+                if direction == 'BUY':
+                    if current_price - entry_price >= activation_dist:
+                        target_sl = current_price - trail_dist
+                        if current_sl is None or float(current_sl) == 0.0 or target_sl > float(current_sl):
+                            new_sl = target_sl
+                            trail_updated = True
+                elif direction == 'SELL':
+                    if entry_price - current_price >= activation_dist:
+                        target_sl = current_price + trail_dist
+                        if current_sl is None or float(current_sl) == 0.0 or target_sl < float(current_sl):
+                            new_sl = target_sl
+                            trail_updated = True
+                            
+                if trail_updated:
+                    res = self.mt5_bridge.modify_position(ticket_id, new_sl=new_sl)
+                    if res.get("status") == "SUCCESS":
+                        final_sl = res.get("final_sl", new_sl)
+                        logging.info(f"📈 [MT5 Simple Trailing Stop] เลื่อนจุด SL ของออเดอร์ #{ticket_id} สำเร็จไปที่ {final_sl} (ราคาตลาด {current_price:.2f})")
+                        msg = (
+                            f"📈 **[MT5 Live - Simple Trailing Stop Success]**\n"
+                            f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
+                            f"**Action:** Move SL -> {final_sl}\n"
+                            f"**Reason:** Price moved in favor by {activation_dist:.1f} USD"
+                        )
+                        self.send_discord_message(msg)
+                        pos['sl'] = float(final_sl)
+                    else:
+                        logging.warning(f"❌ [MT5 Simple Trailing Stop] เลื่อนจุด SL ของออเดอร์ #{ticket_id} ล้มเหลว: {res.get('message')}")
+                
+                # 2. เรียกใช้ Manager Agent (LLM) เพื่อประเมินสภาวะราคาขัดแย้งสำหรับการคัทหรือล็อกกำไรด่วน
                 decision = self.agents.manage_position(
                     position_details=pos,
                     current_price=current_price,

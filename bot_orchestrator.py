@@ -25,10 +25,10 @@ class TradingBotOrchestrator:
     def send_discord_message(self, message):
         """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
         import requests
-        webhook_url = os.environ.get(
-            "DISCORD_WEBHOOK_URL",
-            "https://discord.com/api/webhooks/1490619446287401121/-3q8Jfe1Hu49gXwL00ZKJkOHjO5CmMQKMe9ixm22YRmIwC0Czy9jV6EhI4muoFqn6JXC"
-        )
+        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+        if not webhook_url:
+            logging.warning("ไม่พบการกำหนดค่า DISCORD_WEBHOOK_URL ใน Environment Variables ระบบจะงดส่งแจ้งเตือนทาง Discord")
+            return
         try:
             payload = {"content": message}
             response = requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
@@ -183,14 +183,15 @@ class TradingBotOrchestrator:
             df_15m = self.data_feed.get_historical_data(interval="15m", period="2d")
             df_1h = self.data_feed.get_historical_data(interval="1h", period="5d")
             
-            market_summary = self._prepare_market_summary(df_5m, df_15m, df_1h, current_price)
-            
-            # ส่งให้ Analyst Agent วิเคราะห์
+            # ส่งให้ Analyst Agent วิเคราะห์ด้วยระบบ Multi-Agent M5 Price Action
             decision = self.agents.analyze_market(
-                market_data_str=market_summary,
+                df_5m=df_5m,
+                df_15m=df_15m,
+                df_1h=df_1h,
                 balance=self.exchange.balance,
                 symbol=self.symbol,
-                leverage=self.exchange.leverage
+                leverage=self.exchange.leverage,
+                spread=0.0 # โหมดจำลองใช้สเปรด 0
             )
             
             if not decision:
@@ -242,12 +243,54 @@ class TradingBotOrchestrator:
                 
         else:
             # ----------------------------------------------------
-            # 📌 สาขา B: มีออเดอร์ค้างอยู่ -> ส่งให้ Manager Agent จัดการหน้าไม้
+            # 📌 สาขา B: มีออเดอร์ค้างอยู่ -> จัดการ Simple Trailing Stop (Python) และเช็ค Reversal (LLM)
             # ----------------------------------------------------
             logging.info(f"สถานะพอร์ต: มีออเดอร์ค้างอยู่ {len(open_positions)} ไม้")
             
+            # กำหนดระยะตามประเภทสินทรัพย์
+            if "BTC" in self.symbol.upper():
+                activation_dist = 50.0
+                trail_dist = 50.0
+            else:  # XAUUSD
+                activation_dist = 2.0
+                trail_dist = 2.0
+                
             for pos in open_positions:
                 pos_id = pos['id']
+                direction = pos['direction']
+                entry_price = float(pos['entry_price'])
+                current_sl = pos['sl']
+                
+                # 1. จัดการ Simple Trailing Stop อัตโนมัติทางฝั่ง Python
+                trail_updated = False
+                new_sl = None
+                
+                if direction == 'BUY':
+                    if current_price - entry_price >= activation_dist:
+                        target_sl = current_price - trail_dist
+                        if current_sl is None or target_sl > float(current_sl):
+                            new_sl = target_sl
+                            trail_updated = True
+                elif direction == 'SELL':
+                    if entry_price - current_price >= activation_dist:
+                        target_sl = current_price + trail_dist
+                        if current_sl is None or target_sl < float(current_sl):
+                            new_sl = target_sl
+                            trail_updated = True
+                            
+                if trail_updated:
+                    self.exchange.modify_sl_tp(pos_id, new_sl=new_sl)
+                    logging.info(f"📈 [Simple Trailing Stop] เลื่อนจุด SL ของออเดอร์ {pos_id} ไปที่ {new_sl:.2f} (ราคาตลาด {current_price:.2f})")
+                    msg = (
+                        f"📈 **[Sim Mode - Simple Trailing Stop]**\n"
+                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Move SL -> {new_sl:.2f}\n"
+                        f"**Reason:** Price moved in favor by {activation_dist:.1f} USD"
+                    )
+                    self.send_discord_message(msg)
+                    pos['sl'] = new_sl
+
+                # 2. เรียกใช้ Manager Agent (LLM) เพื่อประเมินสภาวะราคาขัดแย้งสำหรับการคัทหรือล็อกกำไรด่วน
                 decision = self.agents.manage_position(
                     position_details=pos,
                     current_price=current_price,

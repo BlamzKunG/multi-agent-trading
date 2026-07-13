@@ -64,10 +64,14 @@ class MT5Integration:
             logging.error(f"ไม่สามารถดึงข้อมูลราคาของ {symbol} ได้")
             return None
             
+        sym_info = mt5.symbol_info(symbol)
+        spread = sym_info.spread if sym_info else 0.0
+            
         return {
             "bid": tick.bid,
             "ask": tick.ask,
-            "price": (tick.bid + tick.ask) / 2.0  # ราคาเฉลี่ยกลาง
+            "price": (tick.bid + tick.ask) / 2.0,  # ราคาเฉลี่ยกลาง
+            "spread": float(spread)
         }
 
     def get_historical_data(self, symbol="XAUUSD", timeframe="15m", num_candles=100):

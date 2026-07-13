@@ -80,6 +80,66 @@ class GoldDataFeed:
             logging.error(f"เกิดข้อผิดพลาดในการดึงข้อมูลย้อนหลัง XAUUSD: {e}")
             return pd.DataFrame()
 
+    def analyze_price_action(self, df, swing_window=3):
+        """
+        วิเคราะห์โครงสร้างพฤติกรรมราคา (Price Action) และหาแนวรับแนวต้านสวิงไฮ/โลว์
+        """
+        import numpy as np
+        if df.empty:
+            return df
+            
+        df = df.copy()
+        
+        # 1. คำนวณลักษณะแท่งเทียนพื้นฐาน (Candlestick Attributes)
+        df['body_size'] = (df['close'] - df['open']).abs()
+        df['upper_shadow'] = df['high'] - df[['close', 'open']].max(axis=1)
+        df['lower_shadow'] = df[['close', 'open']].min(axis=1) - df['low']
+        df['range'] = df['high'] - df['low']
+        df['body_percent'] = np.where(df['range'] > 0, df['body_size'] / df['range'], 0.0)
+        
+        # ประเภทของแท่งเทียน
+        df['candle_type'] = np.where(df['close'] > df['open'], 'BULLISH', 
+                             np.where(df['close'] < df['open'], 'BEARISH', 'DOJI'))
+        
+        # 2. คำนวณอินดิเคเตอร์แบบ Lag ต่ำ / ค่าเฉลี่ยประคองภาพรวม
+        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+        
+        # คำนวณ ATR (14) เพื่อวัดความผันผวน
+        high_low = df['high'] - df['low']
+        high_cp = (df['high'] - df['close'].shift()).abs()
+        low_cp = (df['low'] - df['close'].shift()).abs()
+        tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+        df['atr_14'] = tr.rolling(14).mean()
+        df['atr_14'] = df['atr_14'].ffill().bfill()
+        
+        # 3. คำนวณจุด Swing High / Swing Low (แนวรับแนวต้านทางโครงสร้างราคา)
+        df['swing_high'] = False
+        df['swing_low'] = False
+        
+        for i in range(swing_window, len(df) - swing_window):
+            # Swing High: ราคา High สูงกว่า High รอบข้างฝั่งละ swing_window แท่ง
+            val = df.loc[i, 'high']
+            is_high = True
+            for j in range(1, swing_window + 1):
+                if val < df.loc[i - j, 'high'] or val < df.loc[i + j, 'high']:
+                    is_high = False
+                    break
+            if is_high:
+                df.loc[i, 'swing_high'] = True
+                
+            # Swing Low: ราคา Low ต่ำกว่า Low รอบข้างฝั่งละ swing_window แท่ง
+            val = df.loc[i, 'low']
+            is_low = True
+            for j in range(1, swing_window + 1):
+                if val > df.loc[i - j, 'low'] or val > df.loc[i + j, 'low']:
+                    is_low = False
+                    break
+            if is_low:
+                df.loc[i, 'swing_low'] = True
+                
+        return df
+
 # ทดสอบดึงข้อมูล
 if __name__ == "__main__":
     feed = GoldDataFeed()
@@ -90,10 +150,20 @@ if __name__ == "__main__":
     print(f"ราคา: {price} USD/oz\n")
     
     # 2. ทดสอบดึงแท่งเทียนย้อนหลัง 15 นาที ย้อนหลัง 2 วัน
-    print(f"=== ดึงข้อมูลแท่งเทียนย้อนหลัง 15m ===")
+    print(f"=== ดึงข้อมูลแท่งเทียนย้อนหลัง 15m และทดสอบวิเคราะห์ Price Action ===")
     df = feed.get_historical_data(interval="15m", period="2d")
     if not df.empty:
-        print(df.tail(5))  # แสดง 5 แถวล่าสุด
-        print(f"จำนวนแท่งเทียนที่ได้: {len(df)} แท่ง")
+        df_analyzed = feed.analyze_price_action(df)
+        print("--- 5 แถวประวัติวิเคราะห์ล่าสุด ---")
+        print(df_analyzed[["timestamp", "close", "candle_type", "body_percent", "swing_high", "swing_low"]].tail(5))
+        
+        # แสดง Swing High / Low ล่าสุดบางตัว
+        swings_high = df_analyzed[df_analyzed['swing_high']]
+        swings_low = df_analyzed[df_analyzed['swing_low']]
+        print("\n--- Swing High ล่าสุด ---")
+        print(swings_high[["timestamp", "high"]].tail(3))
+        print("\n--- Swing Low ล่าสุด ---")
+        print(swings_low[["timestamp", "low"]].tail(3))
+        print(f"\nจำนวนแท่งเทียนทั้งหมด: {len(df)} แท่ง")
     else:
         print("ไม่สามารถดึงข้อมูลย้อนหลังได้")

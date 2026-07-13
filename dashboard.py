@@ -47,7 +47,9 @@ dashboard_config = {
     "mode": "sim",            # "sim" หรือ "mt5"
     "max_lot": 0.01,
     "auto_pilot": False,      # โหมดรันอัตโนมัติ
-    "interval_minutes": 5     # ทุกกี่นาที
+    "interval_minutes": 5,    # ทุกกี่นาที
+    "analysis_model": "claude-sonnet-5",
+    "management_model": "claude-sonnet-4-6"
 }
 
 # สร้างอินสแตนซ์ของบอทสำหรับทั้ง 2 โหมด
@@ -67,6 +69,11 @@ def load_config():
             # ซิงค์ค่าล็อตสูงสุดให้บอท
             bot_sim.max_lot = float(dashboard_config.get("max_lot", 0.01))
             bot_mt5.max_lot = float(dashboard_config.get("max_lot", 0.01))
+            # ซิงค์โมเดลให้บอท
+            bot_sim.agents.analysis_model = dashboard_config.get("analysis_model", "gpt-5.5")
+            bot_mt5.agents.analysis_model = dashboard_config.get("analysis_model", "gpt-5.5")
+            bot_sim.agents.management_model = dashboard_config.get("management_model", "gpt-5.4-mini")
+            bot_mt5.agents.management_model = dashboard_config.get("management_model", "gpt-5.4-mini")
         except Exception as e:
             logging.error(f"โหลดไฟล์ตั้งค่าล้มเหลว: {e}")
 
@@ -200,7 +207,9 @@ def get_status():
                 "pending_orders": [], 
                 "max_lot": dashboard_config["max_lot"],
                 "auto_pilot": dashboard_config["auto_pilot"],
-                "interval_minutes": dashboard_config["interval_minutes"]
+                "interval_minutes": dashboard_config["interval_minutes"],
+                "analysis_model": dashboard_config.get("analysis_model", "gpt-5.5"),
+                "management_model": dashboard_config.get("management_model", "gpt-5.4-mini")
             })
             
         else:
@@ -225,6 +234,8 @@ def get_status():
                     "max_lot": dashboard_config["max_lot"],
                     "auto_pilot": dashboard_config["auto_pilot"],
                     "interval_minutes": dashboard_config["interval_minutes"],
+                    "analysis_model": dashboard_config.get("analysis_model", "gpt-5.5"),
+                    "management_model": dashboard_config.get("management_model", "gpt-5.4-mini"),
                     "message": "ไม่สามารถเชื่อมต่อโปรแกรม MT5 Terminal ได้"
                 })
                 
@@ -245,7 +256,9 @@ def get_status():
                 "pending_orders": pending_orders,
                 "max_lot": dashboard_config["max_lot"],
                 "auto_pilot": dashboard_config["auto_pilot"],
-                "interval_minutes": dashboard_config["interval_minutes"]
+                "interval_minutes": dashboard_config["interval_minutes"],
+                "analysis_model": dashboard_config.get("analysis_model", "gpt-5.5"),
+                "management_model": dashboard_config.get("management_model", "gpt-5.4-mini")
             })
             
     except Exception as e:
@@ -324,19 +337,29 @@ def update_config():
     max_lot = float(req_data.get("max_lot", 0.01))
     auto_pilot = bool(req_data.get("auto_pilot", False))
     interval_minutes = int(req_data.get("interval_minutes", 5))
+    analysis_model = req_data.get("analysis_model", "gpt-5.5")
+    management_model = req_data.get("management_model", "gpt-5.4-mini")
     
     dashboard_config["mode"] = mode
     dashboard_config["max_lot"] = max_lot
     dashboard_config["auto_pilot"] = auto_pilot
     dashboard_config["interval_minutes"] = interval_minutes
+    dashboard_config["analysis_model"] = analysis_model
+    dashboard_config["management_model"] = management_model
     
     # อัปเดตล็อตบอท
     bot_sim.max_lot = max_lot
     bot_mt5.max_lot = max_lot
     
+    # อัปเดตโมเดลบอท
+    bot_sim.agents.analysis_model = analysis_model
+    bot_mt5.agents.analysis_model = analysis_model
+    bot_sim.agents.management_model = management_model
+    bot_mt5.agents.management_model = management_model
+    
     save_config_file()
     
-    logging.info(f"💾 บันทึกการตั้งค่าบอท: โหมด={mode.upper()} | ล็อตสูงสุด={max_lot} | Auto-Pilot={auto_pilot} | รอบ={interval_minutes} นาที")
+    logging.info(f"💾 บันทึกการตั้งค่าบอท: โหมด={mode.upper()} | ล็อตสูงสุด={max_lot} | Auto-Pilot={auto_pilot} | รอบ={interval_minutes} นาที | วิเคราะห์={analysis_model} | จัดการ={management_model}")
     return jsonify({"status": "SUCCESS"})
 
 @app.route('/api/history', methods=['GET'])
