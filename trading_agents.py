@@ -419,3 +419,423 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol} ด้วยโมเดล {model}...")
         return self._call_llm(model, messages, json_response=True, fallbacks=fallbacks)
+
+    def analyze_market_regime(self, df_5m, df_15m, df_1h, symbol="XAUUSD"):
+        """
+        Market Regime Agent (วิเคราะห์จำแนกสภาวะตลาดหลัก)
+        """
+        model = self.analysis_model
+        fallbacks = self._get_fallbacks(model)
+        
+        df_5m_pa = self._analyze_price_action(df_5m)
+        df_15m_pa = self._analyze_price_action(df_15m)
+        
+        current_price = float(df_5m_pa['close'].iloc[-1])
+        atr_5m = float(df_5m_pa['atr_14'].iloc[-1])
+        
+        system_prompt = f"""คุณคือ Market Regime Agent หน้าที่ของคุณคือจำแนกสภาวะตลาดปัจจุบันของ {symbol}
+วิเคราะห์ความผันผวน ปริมาณแท่งเทียน และโครงสร้างการเคลื่อนที่ของราคาล่าสุด
+เป้าหมายคือระบุสภาวะตลาดเป็นค่าใดค่าหนึ่งในกลุ่มเหล่านี้เท่านั้น:
+- "Trend Strong" (แนวโน้มเด่นและทิศทางชัดเจน)
+- "Trend Weak" (เริ่มมีเทรนแต่ยังไม่มีกำลังส่งเพียงพอ)
+- "Sideway" (แกว่งตัวออกข้างในกรอบแคบ/กว้าง)
+- "High Volatility" (ผันผวนรุนแรงผิดปกติ เช่น ช่วงข่าวนอกตารางหรือแรงซื้อขายกระชาก)
+- "Low Volatility" (ราคานิ่งเกินไป ไม่คุ้มค่าสเปรด)
+- "News" (ใกล้หรืออยู่ในช่วงเวลาประกาศข่าวเศรษฐกิจสำคัญ)
+- "Uncertain" (ตลาดก้ำกึ่ง โครงสร้างราคาขัดแย้งกันอย่างรุนแรง)
+
+คุณต้องตอบกลับเป็นรูปแบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "regime": "Trend Strong" | "Trend Weak" | "Sideway" | "High Volatility" | "Low Volatility" | "News" | "Uncertain",
+  "direction": "BULLISH" | "BEARISH" | "NEUTRAL",
+  "reason": "ประโยคอธิบายสั้นๆ เกี่ยวกับปัจจัยเชิงปริมาณและสถิติเทคนิคที่สังเกตได้"
+}}"""
+
+        def format_candles(df, num_candles=5):
+            summary = ""
+            for _, row in df.tail(num_candles).iterrows():
+                summary += f"- Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | ประเภท={row['candle_type']} | ขนาด={row['body_size']:.2f}\n"
+            return summary
+
+        user_content = f"""ราคาปัจจุบัน: {current_price:.2f}
+ข้อมูลความผันผวนล่าสุด: ATR (5m) = {atr_5m:.2f}
+โครงสร้างราคาแท่งเทียน M5 ล่าสุด:
+{format_candles(df_5m_pa, 5)}
+โครงสร้างราคาแท่งเทียน M15 ล่าสุด:
+{format_candles(df_15m_pa, 3)}
+
+กรุณาวิเคราะห์สภาวะตลาด (Market Regime) ล่าสุดออกมาเป็น JSON:"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        
+        logging.info("กำลังเรียกใช้ Market Regime Agent...")
+        return self._call_llm(model, messages, json_response=True, fallbacks=fallbacks)
+
+    def review_order(self, proposed_order, regime, trend_report, pa_report, symbol="XAUUSD"):
+        """
+        Reviewer Agent (ผู้ตรวจทานออเดอร์ก่อนส่งคำสั่งไปยังโบรกเกอร์)
+        """
+        model = self.management_model
+        fallbacks = self._get_fallbacks(model)
+        
+        system_prompt = f"""คุณคือ Reviewer Agent หน้าที่ของคุณคือการทำ Double-Check และรีวิวออเดอร์ของ {symbol} ที่นักวิเคราะห์เสนอมา
+ตรวจสอบความสมเหตุสมผลและความขัดแย้งของแผนการเทรด:
+1. หากพฤติกรรมในภาพรวมไม่สอดคล้องกับกลยุทธ์ เช่น ทิศทางเข้าสวนภาพใหญ่โดยไม่มีสัญญาณยืนยัน
+2. หากสภาวะตลาดเป็น High Volatility หรือ Low Volatility หรือ Uncertain หรือ News คุณต้องประเมินว่าคุ้มค่าที่จะเปิดออเดอร์หรือไม่
+3. หากพบความขัดแย้งหรือสุ่มเสี่ยงสูง ให้ปรับ action เป็น "HOLD" และแจ้งเหตุผล
+4. ห้ามขยับราคา entry, sl, tp ยกเว้นพบว่า SL แคบเกินไปและเสี่ยงโดนเคลียร์ง่ายเกินราคา ATR
+
+คุณต้องตอบกลับเป็นรูปแบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "action": "BUY" | "SELL" | "HOLD",
+  "lot": float,
+  "entry": float_หรือ_null,
+  "sl": float_หรือ_null,
+  "tp": float_หรือ_null,
+  "reasoning": "อธิบายสั้นๆ เกี่ยวกับการตัดสินใจรีวิว (เห็นด้วย / เปลี่ยนเป็น HOLD เนื่องจาก...)"
+}}"""
+
+        user_content = f"""ข้อเสนอออเดอร์ดั้งเดิม:
+{json.dumps(proposed_order, indent=2)}
+
+รายงานประเมินสภาวะตลาด (Market Regime):
+{json.dumps(regime, indent=2)}
+
+รายงานนักวิเคราะห์เทรน (Trend Agent):
+{trend_report}
+
+รายงานนักวิเคราะห์พฤติกรรมราคา (Price Action Agent):
+{pa_report}
+
+จงรีวิวออเดอร์นี้และส่งผลการรีวิวในรูปแบบ JSON:"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        
+        logging.info("กำลังเรียกใช้ Reviewer Agent เพื่อตรวจทานออเดอร์สุดท้าย...")
+        return self._call_llm(model, messages, json_response=True, fallbacks=fallbacks)
+
+    def _format_reflection(self, performance_stats, trade_history):
+        reflection_context = ""
+        if performance_stats:
+            reflection_context += "\n--- ผลงานสถิติในอดีตเฉพาะของคุณ (Performance Stats) ---\n"
+            reflection_context += f"- Win Rate: {performance_stats.get('win_rate', 0.0)}%\n"
+            reflection_context += f"- Profit Factor: {performance_stats.get('profit_factor', 1.0)}\n"
+            reflection_context += f"- Expectancy: {performance_stats.get('expectancy', 0.0)}\n"
+            reflection_context += f"- Average Hold Time: {performance_stats.get('avg_hold_time_mins', 0.0)} mins\n"
+            reflection_context += f"- Average R: {performance_stats.get('avg_r', 0.0)}\n"
+            reflection_context += f"- Max Drawdown: ${performance_stats.get('max_drawdown_usd', 0.0)} USD\n"
+            
+        if trade_history:
+            reflection_context += "\n--- ประวัติไม้ที่ปิดล่าสุดของคุณ (Trade History for Reflection) ---\n"
+            # แสดงล่าสุด 5 ไม้
+            for t in trade_history[:5]:
+                reflection_context += f"- เวลาปิด: {t.get('close_time')} | {t.get('direction')} {t.get('lot')} Lot | Entry: {t.get('entry_price')} -> Close: {t.get('close_price')} | PnL: ${t.get('pnl')} ({t.get('close_reason')})\n"
+                
+        if reflection_context:
+            reflection_context = (
+                "\n=========================================\n"
+                "📌 การวิเคราะห์เพื่อปรับปรุงตัวเอง (SELF-REFLECTION CONTEXT):\n"
+                "โปรดทบทวนประวัติการเทรดที่ผ่านมาของคุณด้านบน หากมีอัตราการแพ้สูงหรือขาดทุนต่อเนื่องในไม้ล่าสุด "
+                "ให้เพิ่มความระมัดระวังเป็นพิเศษ และหลีกเลี่ยงการเปิดออเดอร์ในทิศทางที่เป็นจุดอ่อนเดิม หรือปิดไม้ลวกๆ"
+                "\n=========================================\n"
+            ) + reflection_context
+            
+        return reflection_context
+
+    def _format_candles_brief(self, df, num_candles=5):
+        summary = ""
+        for _, row in df.tail(num_candles).iterrows():
+            summary += f"- {row['timestamp'].strftime('%H:%M')} Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | {row['candle_type']} | ATR={row.get('atr_14', 0.0):.2f}\n"
+        return summary
+
+    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None):
+        """
+        1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30
+        """
+        model = self.analysis_model
+        fallbacks = self._get_fallbacks(model)
+        
+        df_1m_pa = self._analyze_price_action(df_1m)
+        df_5m_pa = self._analyze_price_action(df_5m)
+        df_15m_pa = self._analyze_price_action(df_15m)
+        
+        current_price = float(df_5m_pa['close'].iloc[-1])
+        atr_5m = float(df_5m_pa['atr_14'].iloc[-1])
+        
+        # Risk Manager calculations
+        sl_distance_usd = max(1.5 * atr_5m, 1.50 if "XAU" in symbol.upper() else 15.0)
+        contract_size = 100.0 if "XAU" in symbol.upper() else 1.0
+        risk_amount_usd = balance * 0.01
+        calculated_lot = risk_amount_usd / (sl_distance_usd * contract_size)
+        calculated_lot = round(max(0.01, calculated_lot), 2)
+        max_allowed_lot = getattr(self, 'max_lot', 0.05)
+        final_lot = min(calculated_lot, max_allowed_lot)
+        
+        reflection_context = self._format_reflection(performance_stats, trade_history)
+        
+        # Sub-agent 1: Micro Trend Analyst
+        trend_system = f"""คุณคือ Micro Trend Analyst ทำหน้าที่ประเมินความเอียงของเทรนสั้นของ {symbol}
+วิเคราะห์กราฟแท่งเทียน M15/M30 เพื่อหาทิศทางของค่าเฉลี่ย EMA 50/200 และความชัน (Slope)
+ส่งรายงานสรุปสั้นๆ (ไม่เกิน 3 บรรทัด) ว่าทิศทางใดได้เปรียบ: BUY ONLY, SELL ONLY หรือ HOLD"""
+        
+        trend_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+ประวัติแท่งเทียน M15 ย้อนหลัง:
+{self._format_candles_brief(df_15m_pa, 5)}
+กรุณาวิเคราะห์แนวโน้มสั้น:"""
+        
+        logging.info("Scalping Sub-agent 1: เรียกใช้ Micro Trend Analyst...")
+        trend_report = self._call_llm(self.management_model, [
+            {"role": "system", "content": trend_system},
+            {"role": "user", "content": trend_user}
+        ], json_response=False, fallbacks=self._get_fallbacks(self.management_model))
+        
+        # Sub-agent 2: Price Action Sniper
+        pa_system = f"""คุณคือ Price Action Sniper ทำหน้าที่ตรวจสอบแท่งเทียนช่วง 1m และ 5m หาจุด Rejection wick, Engulfing หรือ Breakout ของ {symbol}
+ส่งสรุปรายงานจุดสไนเปอร์ (ไม่เกิน 3 บรรทัด) เกี่ยวกับสัญญาณเข้าจุดได้เปรียบและระดับราคาตัดขาดทุนทางพฤติกรรมราคา"""
+        
+        pa_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+แท่งเทียน M5 ล่าสุด:
+{self._format_candles_brief(df_5m_pa, 5)}
+แท่งเทียน M1 ล่าสุด:
+{self._format_candles_brief(df_1m_pa, 5)}
+กรุณาวิเคราะห์พฤติกรรมราคาสไนเปอร์:"""
+        
+        logging.info("Scalping Sub-agent 2: เรียกใช้ Price Action Sniper...")
+        pa_report = self._call_llm(model, [
+            {"role": "system", "content": pa_system},
+            {"role": "user", "content": pa_user}
+        ], json_response=False, fallbacks=fallbacks)
+        
+        # CIO consensus Scalp Master
+        cio_system = f"""คุณคือ Scalp Master / CIO Consensus ของกองทุนเทรดสั้น
+หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจเปิดออเดอร์แบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "action": "BUY" | "SELL" | "HOLD",
+  "hold_minutes": 5 | 10 | 15 | 30, // ในโหมด Scalping หากตอบ HOLD ให้เลือกพักวิเคราะห์ 5, 10, 15 หรือ 30 นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
+  "lot": float,
+  "entry": float,
+  "sl": float,
+  "tp": float,
+  "reasoning": "ประโยคสรุปเหตุผลอย่างเป็นวิชาการ"
+}}
+
+กติกา:
+1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
+2. หากสเปรดโบรกเกอร์ล่าสุด ({spread}) สูงเกิน หรือความผันผวน ATR ({atr_5m:.2f}) ต่ำเกินไป หรือทิศทางชนกัน ให้เลือก HOLD และระบุเวลาพักเทรด
+3. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณมาตามความเสี่ยง 1% คือ {final_lot}
+4. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำห่างประมาณ: {sl_distance_usd:.2f} USD)"""
+
+        cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
+รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
+รายงาน Micro Trend Analyst: {trend_report}
+รายงาน Price Action Sniper: {pa_report}
+{reflection_context}
+
+จงตอบสรุปผลการเทรดแบบ Scalping ในรูปแบบ JSON:"""
+
+        logging.info("Scalping CIO: สรุปผลลัพธ์มติการเทรดแบบ Scalping...")
+        proposal = self._call_llm(model, [
+            {"role": "system", "content": cio_system},
+            {"role": "user", "content": cio_user}
+        ], json_response=True, fallbacks=fallbacks)
+        
+        # เรียก Reviewer ตรวจทานออเดอร์สุดท้ายเพื่อความปลอดภัยสูงสุด
+        final_decision = self.review_order(proposal, regime_report, trend_report, pa_report, symbol)
+        return final_decision
+
+    def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None):
+        """
+        2) Day Trading Agent: Intraday trading, holds positions only within the day
+        """
+        model = self.analysis_model
+        fallbacks = self._get_fallbacks(model)
+        
+        df_15m_pa = self._analyze_price_action(df_15m)
+        df_1h_pa = self._analyze_price_action(df_1h)
+        df_4h_pa = self._analyze_price_action(df_4h)
+        
+        current_price = float(df_15m_pa['close'].iloc[-1])
+        atr_1h = float(df_1h_pa['atr_14'].iloc[-1])
+        
+        # Risk Manager calculations (Day Trade SL is typically 1.5 * ATR 1h to avoid intraday noise)
+        sl_distance_usd = max(1.5 * atr_1h, 3.0 if "XAU" in symbol.upper() else 30.0)
+        contract_size = 100.0 if "XAU" in symbol.upper() else 1.0
+        risk_amount_usd = balance * 0.01
+        calculated_lot = risk_amount_usd / (sl_distance_usd * contract_size)
+        calculated_lot = round(max(0.01, calculated_lot), 2)
+        max_allowed_lot = getattr(self, 'max_lot', 0.05)
+        final_lot = min(calculated_lot, max_allowed_lot)
+        
+        reflection_context = self._format_reflection(performance_stats, trade_history)
+        
+        # Sub-agent 1: Intraday Trend Analyst
+        trend_system = f"""คุณคือ Intraday Trend Analyst ทำหน้าที่ตรวจสอบกรอบราคา H1 และ H4 ของ {symbol}
+หาแนวรับต้านหลักระดับวัน ค้นหาเส้นเฉลี่ย VWAP หรือ EMA และระบุทิศทางภาพใหญ่ในการเทรดระหว่างวัน
+ส่งรายงานสรุปสั้นๆ (ไม่เกิน 3 บรรทัด) ว่าทิศทางใดได้เปรียบ: BULLISH, BEARISH หรือ RANGE-BOUND"""
+        
+        trend_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+ประวัติแท่ง H1 ย้อนหลัง:
+{self._format_candles_brief(df_1h_pa, 5)}
+ประวัติแท่ง H4 ย้อนหลัง:
+{self._format_candles_brief(df_4h_pa, 3)}
+กรุณาวิเคราะห์สภาวะแนวโน้มรายวัน:"""
+        
+        logging.info("Day Trading Sub-agent 1: เรียกใช้ Intraday Trend Analyst...")
+        trend_report = self._call_llm(self.management_model, [
+            {"role": "system", "content": trend_system},
+            {"role": "user", "content": trend_user}
+        ], json_response=False, fallbacks=self._get_fallbacks(self.management_model))
+        
+        # Sub-agent 2: Range Guard
+        range_system = f"""คุณคือ Range Guard หน้าที่ของคุณคือตรวจสอบกรอบการสวิงของราคาวันนี้
+คำนวณ Daily Range, Opening Range (M15), หาแนวรับต้านย่อย และประเมินจุด Overbought/Oversold ในการดีดตัวกลับ
+ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำว่าราคาใกล้จุดตึงตัวหรือพร้อมกลับตัว (Mean Reversion) หรือทะลุกรอบแรง (Breakout)"""
+        
+        range_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+แท่ง M15 ล่าสุด:
+{self._format_candles_brief(df_15m_pa, 5)}
+ความผันผวนระดับ H1 (ATR): {atr_1h:.2f}
+กรุณาวิเคราะห์กรอบสวิง:"""
+        
+        logging.info("Day Trading Sub-agent 2: เรียกใช้ Range Guard...")
+        range_report = self._call_llm(model, [
+            {"role": "system", "content": range_system},
+            {"role": "user", "content": range_user}
+        ], json_response=False, fallbacks=fallbacks)
+        
+        # CIO Day Trade Master
+        cio_system = f"""คุณคือ Day Trade Master / CIO Consensus ของกองทุนเทรดรายวัน
+หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจเปิดออเดอร์แบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "action": "BUY" | "SELL" | "HOLD",
+  "hold_minutes": 30 | 60 | 240, // ในโหมด Day Trading หากตอบ HOLD ให้เลือกพักวิเคราะห์ 30, 60 หรือ 240 นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
+  "lot": float,
+  "entry": float,
+  "sl": float,
+  "tp": float,
+  "reasoning": "ประโยคสรุปเหตุผลการเข้าเทรดกลยุทธ์ย่อย (เช่น เข้าย่อดึงกลับตัวแบบ Trend continuation หรือ เข้าดักส่วนขอบ Mean reversion)"
+}}
+
+กติกา:
+1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
+2. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณตามความเสี่ยง 1% คือ {final_lot}
+3. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำรายวันห่างประมาณ: {sl_distance_usd:.2f} USD)
+4. ออเดอร์ทั้งหมดต้องไม่ถือครองข้ามคืน"""
+
+        cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
+รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
+รายงาน Intraday Trend Analyst: {trend_report}
+รายงาน Range Guard: {range_report}
+{reflection_context}
+
+จงตอบสรุปผลการเทรดแบบ Day Trading ในรูปแบบ JSON:"""
+
+        logging.info("Day Trading CIO: สรุปผลลัพธ์มติการเทรดแบบ Day Trading...")
+        proposal = self._call_llm(model, [
+            {"role": "system", "content": cio_system},
+            {"role": "user", "content": cio_user}
+        ], json_response=True, fallbacks=fallbacks)
+        
+        final_decision = self.review_order(proposal, regime_report, trend_report, range_report, symbol)
+        return final_decision
+
+    def analyze_swingtrading(self, df_4h, df_1d, df_1w, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None):
+        """
+        3) Swing Trading Agent: Holds positions for days to weeks, capturing large structural moves
+        """
+        model = self.analysis_model
+        fallbacks = self._get_fallbacks(model)
+        
+        df_4h_pa = self._analyze_price_action(df_4h)
+        df_1d_pa = self._analyze_price_action(df_1d)
+        df_1w_pa = self._analyze_price_action(df_1w)
+        
+        current_price = float(df_4h_pa['close'].iloc[-1])
+        atr_1d = float(df_1d_pa['atr_14'].iloc[-1])
+        
+        # Risk Manager calculations (Swing Trade SL is typically 1.5 * Daily ATR to handle multi-day fluctuations)
+        sl_distance_usd = max(1.5 * atr_1d, 8.0 if "XAU" in symbol.upper() else 80.0)
+        contract_size = 100.0 if "XAU" in symbol.upper() else 1.0
+        risk_amount_usd = balance * 0.01
+        calculated_lot = risk_amount_usd / (sl_distance_usd * contract_size)
+        calculated_lot = round(max(0.01, calculated_lot), 2)
+        max_allowed_lot = getattr(self, 'max_lot', 0.05)
+        final_lot = min(calculated_lot, max_allowed_lot)
+        
+        reflection_context = self._format_reflection(performance_stats, trade_history)
+        
+        # Sub-agent 1: Macro Structure Analyst
+        trend_system = f"""คุณคือ Macro Structure Analyst หน้าที่ของคุณคือตรวจสอบสวิงใหญ่ระดับ D1 และ W1 ของ {symbol}
+ค้นหาแนวรับต้านหนาเชิงพฤติกรรมหลัก (Major S/R) และระบุโครงสร้าง Market Structure (Higher Highs / Higher Lows)
+ส่งรายงานสรุปสั้นๆ (ไม่เกิน 3 บรรทัด) ชี้ระดับแนวยุทธศาสตร์และแนวโน้มหลักระดับสัปดาห์"""
+        
+        trend_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+ประวัติแท่ง D1 ย้อนหลัง:
+{self._format_candles_brief(df_1d_pa, 5)}
+ประวัติแท่ง W1 ย้อนหลัง:
+{self._format_candles_brief(df_1w_pa, 3)}
+กรุณาวิเคราะห์แนวโน้มสวิงใหญ่:"""
+        
+        logging.info("Swing Trading Sub-agent 1: เรียกใช้ Macro Structure Analyst...")
+        trend_report = self._call_llm(self.management_model, [
+            {"role": "system", "content": trend_system},
+            {"role": "user", "content": trend_user}
+        ], json_response=False, fallbacks=self._get_fallbacks(self.management_model))
+        
+        # Sub-agent 2: Fundamental Catalyst Guard
+        fundamental_system = f"""คุณคือ Fundamental Catalyst Guard ทำหน้าที่วิเคราะห์ข่าวใหญ่ระดับมหภาคและดอกเบี้ยนโยบาย
+วิเคราะห์ความเสี่ยงข้ามสัปดาห์ เช่น Gap Risk, ค่า Swap (Carry cost), ปัจจัยนโยบายธนาคารกลางที่จะเกิดขึ้นในระยะยาว
+ส่งรายงานแจ้งเตือน (ไม่เกิน 3 บรรทัด) เรื่องความเสี่ยงและฝั่งทิศทางที่มีแต้มต่อเชิงปัจจัยพื้นฐานร่วมกับเทรนยาว"""
+        
+        fundamental_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+แท่ง H4 ล่าสุด:
+{self._format_candles_brief(df_4h_pa, 5)}
+กรุณาวิเคราะห์สภาวะเชิงปัจจัยพื้นฐานและความเสี่ยงยาว:"""
+        
+        logging.info("Swing Trading Sub-agent 2: เรียกใช้ Fundamental Catalyst Guard...")
+        fundamental_report = self._call_llm(model, [
+            {"role": "system", "content": fundamental_system},
+            {"role": "user", "content": fundamental_user}
+        ], json_response=False, fallbacks=fallbacks)
+        
+        # CIO Swing Master
+        cio_system = f"""คุณคือ Swing Master / CIO Consensus ของกองทุนเทรดสวิงระยะยาว
+หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจเปิดออเดอร์แบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "action": "BUY" | "SELL" | "HOLD",
+  "hold_minutes": 240 | 480 | 720, // ในโหมด Swing Trading หากตอบ HOLD ให้เลือกพักวิเคราะห์ 240 (4 ชม.), 480 (8 ชม.) หรือ 720 (12 ชม.) นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
+  "lot": float,
+  "entry": float,
+  "sl": float,
+  "tp": float,
+  "reasoning": "ประโยคสรุปแผนการเทรดข้ามวันเชิงสวิง (เช่น ดักสวนกรอบรับต้านใหญ่ดึงกลับ หรือ เทรดตามเบรคเอาต์สวิงใหญ่)"
+}}
+
+กติกา:
+1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
+2. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณตามความเสี่ยง 1% คือ {final_lot}
+3. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำสำหรับการแกว่งสัปดาห์ห่างประมาณ: {sl_distance_usd:.2f} USD)
+4. ยินดีถือออเดอร์ข้ามคืนได้หากสอดคล้องความเสี่ยงและแนวโน้มเชิงมหภาค"""
+
+        cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
+รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
+รายงาน Macro Structure Analyst: {trend_report}
+รายงาน Fundamental Catalyst Guard: {fundamental_report}
+{reflection_context}
+
+จงตอบสรุปผลการเทรดแบบ Swing Trading ในรูปแบบ JSON:"""
+
+        logging.info("Swing Trading CIO: สรุปผลลัพธ์มติการเทรดแบบ Swing Trading...")
+        proposal = self._call_llm(model, [
+            {"role": "system", "content": cio_system},
+            {"role": "user", "content": cio_user}
+        ], json_response=True, fallbacks=fallbacks)
+        
+        final_decision = self.review_order(proposal, regime_report, trend_report, fundamental_report, symbol)
+        return final_decision

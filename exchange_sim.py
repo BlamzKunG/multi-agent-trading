@@ -66,13 +66,14 @@ class MockExchange:
         for pos_id, execution_price, reason in closed_ids:
             self._close_position_internal(pos_id, execution_price, reason)
 
-    def open_position(self, direction, lot, sl=None, tp=None):
+    def open_position(self, direction, lot, sl=None, tp=None, magic=123456):
         """
         เปิดออเดอร์ใหม่ (Market Order)
         - direction: 'BUY' หรือ 'SELL'
         - lot: ขนาดสัญญา (ต่ำสุด 0.01)
         - sl: ระดับจุดตัดขาดทุน (ราคา)
         - tp: ระดับจุดทำกำไร (ราคา)
+        - magic: หมายเลข Magic Number ของ Agent
         """
         if direction not in ['BUY', 'SELL']:
             return {"status": "ERROR", "message": "ทิศทางออเดอร์ไม่ถูกต้อง (ต้องเป็น BUY หรือ SELL)"}
@@ -106,11 +107,12 @@ class MockExchange:
             "tp": float(tp) if tp is not None else None,
             "pnl": 0.0,
             "margin": required_margin,
-            "open_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            "open_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "magic": int(magic)
         }
         
         self.positions[pos_id] = position
-        logging.info(f"เปิดออเดอร์ใหม่สำเร็จ: {direction} {lot} Lot ที่ราคา {self.current_price} | SL: {sl}, TP: {tp}")
+        logging.info(f"เปิดออเดอร์ใหม่สำเร็จ: {direction} {lot} Lot ที่ราคา {self.current_price} | SL: {sl}, TP: {tp} | Magic: {magic}")
         return {"status": "SUCCESS", "position": position}
 
     def close_position(self, pos_id):
@@ -153,12 +155,19 @@ class MockExchange:
         logging.info(f"แก้ไขออเดอร์ {pos_id} สำเร็จ | ตั้ง SL ใหม่: {pos['sl']}, TP ใหม่: {pos['tp']}")
         return {"status": "SUCCESS", "position": pos}
 
-    def get_status(self):
+    def get_status(self, magic=None):
         """ดึงสรุปสถานะพอร์ตปัจจุบัน"""
+        open_positions = list(self.positions.values())
+        history = self.history
+        
+        if magic is not None:
+            open_positions = [pos for pos in open_positions if pos.get("magic") == int(magic)]
+            history = [pos for pos in history if pos.get("magic") == int(magic)]
+            
         return {
             "balance": round(self.balance, 2),
             "equity": round(self.equity, 2),
-            "floating_pnl": round(self.get_total_floating_pnl(), 2),
-            "open_positions": list(self.positions.values()),
-            "history": self.history
+            "floating_pnl": round(sum(pos['pnl'] for pos in open_positions), 2),
+            "open_positions": open_positions,
+            "history": history
         }

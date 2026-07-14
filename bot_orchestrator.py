@@ -5,343 +5,305 @@ from datetime import datetime, timezone
 from exchange_sim import MockExchange
 from data_feed import GoldDataFeed
 from trading_agents import TradingAgents
+from performance_tracker import PerformanceTracker
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class TradingBotOrchestrator:
     """
-    ตัวประสานระบบเทรดอัจฉริยะ (Stateless Trading Bot Orchestrator)
-    รวบรวมข้อมูลตลาด -> ส่งวิเคราะห์ผ่าน Agent -> รันคำสั่งจำลองและคุมความเสี่ยง
+    ตัวประสานระบบเทรดอัจฉริยะแบบแยกกลยุทธ์ (Multi-Strategy Simulation Bot Orchestrator)
     """
     def __init__(self, api_key, initial_balance=30.0, leverage=100.0):
-        # 1. โหลดโมดูลจำลองโบรกเกอร์
         self.exchange = MockExchange(initial_balance=initial_balance, leverage=leverage)
-        # 2. โหลดโมดูลดึงข้อมูลตลาดจริง
         self.data_feed = GoldDataFeed()
-        # 3. โหลดโมดูล Agent
         self.agents = TradingAgents(api_key=api_key)
         self.symbol = "XAUUSD"
-        # 4. ค่าตั้งค่า Trailing Stop และระบบประหยัด Token
-        self.trailing_activation_mult = 1.5
-        self.trailing_distance_mult = 1.5
-        self.trailing_step_mult = 0.3
-        self.trailing_atr_tf = "5m"
-        self.hold_minutes = 5
-        self.next_run_time = 0
+        
+        # โครงสร้างสำหรับเก็บคอนฟิกแยกรายกลยุทธ์
+        self.strategies = {
+            "scalping": {
+                "magic": 111111,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": True,
+                "trailing_atr_tf": "5m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
+            },
+            "daytrading": {
+                "magic": 222222,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": True,
+                "trailing_atr_tf": "15m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
+            },
+            "swingtrading": {
+                "magic": 333333,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": False,
+                "trailing_atr_tf": "1h",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
+            }
+        }
 
     def send_discord_message(self, message):
         """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
         import requests
         webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
         if not webhook_url:
-            logging.warning("ไม่พบการกำหนดค่า DISCORD_WEBHOOK_URL ใน Environment Variables ระบบจะงดส่งแจ้งเตือนทาง Discord")
             return
         try:
             payload = {"content": message}
-            response = requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-            response.raise_for_status()
+            requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
         except Exception as e:
             logging.error(f"ไม่สามารถส่งการแจ้งเตือนไปยัง Discord ได้: {e}")
 
     def is_gold_market_open(self):
-        """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดเสาร์-อาทิตย์หรือไม่ (อิงเวลา UTC)"""
+        """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดหรือไม่ (อิงเวลา UTC)"""
         now_utc = datetime.now(timezone.utc)
-        day = now_utc.weekday()  # 0 = Monday, ..., 6 = Sunday
+        day = now_utc.weekday()
         hour = now_utc.hour
         
-        # ปิดวันเสาร์ (5) และวันอาทิตย์ (6) ทั้งวัน
         if day in [5, 6]:
             return False
-        # ปิดวันศุกส์ (4) หลัง 21:00 UTC (ประมาณตี 4 วันเสาร์เวลาไทย)
         if day == 4 and hour >= 21:
             return False
-        # ปิดวันจันทร์ (0) ก่อน 00:00 UTC
         if day == 0 and hour < 0:
             return False
         return True
 
-    def _prepare_market_summary(self, df_5m, df_15m, df_1h, current_price):
-        """แปลงข้อมูลราคาจาก 3 กรอบเวลา (5m, 15m, 1h) ให้เป็นข้อความสรุปวิเคราะห์เชิงลึก"""
-        import pandas as pd
-        
-        summary = f"=== ข้อมูลราคาและอินดิเคเตอร์ Multi-Timeframe สำหรับ {self.symbol} ===\n"
-        summary += f"ราคาตลาดล่าสุด: {current_price:.2f} USD\n\n"
-        
-        # 1. วิเคราะห์ กรอบเวลาใหญ่ (HTF) - 1h
-        summary += "1. [กรอบเวลา 1 ชั่วโมง - เทรนด์หลักและแนวรับแนวต้านสำคัญ]\n"
-        if not df_1h.empty:
-            last_row_1h = df_1h.iloc[-1]
-            summary += f"- ราคาปิดแท่งล่าสุด (1h): {last_row_1h['close']:.2f}\n"
-            if len(df_1h) >= 30:
-                df_sma10 = df_1h['close'].rolling(10).mean()
-                df_sma30 = df_1h['close'].rolling(30).mean()
-                last_sma10 = df_sma10.iloc[-1]
-                last_sma30 = df_sma30.iloc[-1]
-                trend_1h = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-                summary += f"- เทรนด์หลัก (1h): {trend_1h} | SMA10: {last_sma10:.2f} | SMA30: {last_sma30:.2f}\n"
-            
-            # หาจุดสูงสุด/ต่ำสุดใน 20 แท่งล่าสุดเพื่อวิเคราะห์แนวรับแนวต้าน
-            if len(df_1h) >= 20:
-                recent_20 = df_1h.tail(20)
-                highest_20 = recent_20['high'].max()
-                lowest_20 = recent_20['low'].min()
-                summary += f"- แนวต้านสำคัญช่วงนี้ (High 20h): {highest_20:.2f}\n"
-                summary += f"- แนวรับสำคัญช่วงนี้ (Low 20h): {lowest_20:.2f}\n"
-        else:
-            summary += "- (ไม่สามารถดึงข้อมูล 1h ได้)\n"
-            
-        summary += "\n"
-        
-        # 2. วิเคราะห์ กรอบเวลากลาง (ITF) - 15m
-        summary += "2. [กรอบเวลา 15 นาที - โครงสร้างราคาและระยะปลอดภัย]\n"
-        if not df_15m.empty:
-            last_row_15m = df_15m.iloc[-1]
-            summary += f"- ราคาปิดแท่งล่าสุด (15m): {last_row_15m['close']:.2f}\n"
-            if len(df_15m) >= 30:
-                df_sma10 = df_15m['close'].rolling(10).mean()
-                df_sma30 = df_15m['close'].rolling(30).mean()
-                last_sma10 = df_sma10.iloc[-1]
-                last_sma30 = df_sma30.iloc[-1]
-                trend_15m = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-                summary += f"- เทรนด์รอง (15m): {trend_15m} | SMA10: {last_sma10:.2f} | SMA30: {last_sma30:.2f}\n"
-                
-            # คำนวณ ATR เพื่อใช้วัดความผันผวนหาระยะ Stop Loss
-            if len(df_15m) >= 14:
-                high_low = df_15m['high'] - df_15m['low']
-                high_cp = (df_15m['high'] - df_15m['close'].shift()).abs()
-                low_cp = (df_15m['low'] - df_15m['close'].shift()).abs()
-                tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-                atr = tr.rolling(14).mean().iloc[-1]
-                summary += f"- ค่าความผันผวน ATR (14): {atr:.2f} (แนะนำตั้ง SL ห่างอย่างน้อย 1.5 - 2 เท่าของ ATR)\n"
-                
-            # แสดงประวัติราคา 3 แท่งล่าสุด
-            summary += "- ประวัติราคา 3 แท่งล่าสุด (15m):\n"
-            for idx, row in df_15m.tail(3).iterrows():
-                summary += f"  * เวลา {row['timestamp']}: Open {row['open']:.2f} | Close {row['close']:.2f} | Vol: {row['volume']}\n"
-        else:
-            summary += "- (ไม่สามารถดึงข้อมูล 15m ได้)\n"
-            
-        summary += "\n"
-        
-        # 3. วิเคราะห์ กรอบเวลาเล็ก (LTF) - 5m
-        summary += "3. [กรอบเวลา 5 นาที - สัญญาณจุดเข้าซื้อขายปัจจุบัน]\n"
-        if not df_5m.empty:
-            last_row_5m = df_5m.iloc[-1]
-            summary += f"- ราคาปิดแท่งล่าสุด (5m): {last_row_5m['close']:.2f}\n"
-            if len(df_5m) >= 30:
-                df_sma10 = df_5m['close'].rolling(10).mean()
-                df_sma30 = df_5m['close'].rolling(30).mean()
-                last_sma10 = df_sma10.iloc[-1]
-                last_sma30 = df_sma30.iloc[-1]
-                trend_5m = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-                summary += f"- โมเมนตัมระยะสั้น (5m): {trend_5m}\n"
-                
-            # แสดงประวัติราคา 3 แท่งล่าสุด
-            summary += "- ประวัติราคา 3 แท่งล่าสุด (5m):\n"
-            for idx, row in df_5m.tail(3).iterrows():
-                summary += f"  * เวลา {row['timestamp']}: Open {row['open']:.2f} | Close {row['close']:.2f} | Vol: {row['volume']}\n"
-        else:
-            summary += "- (ไม่สามารถดึงข้อมูล 5m ได้)\n"
-            
-        return summary
-
     def run_cycle(self):
         """
-        รันขั้นตอนการตัดสินใจแบบ Stateless 1 รอบ
+        รันทุกกลยุทธ์ย่อยทีละตัวตามลำดับ (หากไม่มีคิวภายนอกควบคุม)
         """
-        logging.info("=== เริ่มต้นรอบการทำงาน (New Trading Cycle) ===")
+        for strat_name in ["scalping", "daytrading", "swingtrading"]:
+            if self.strategies[strat_name]["enabled"]:
+                self.run_strategy_cycle(strat_name)
+
+    def run_strategy_cycle(self, strategy_name):
+        """
+        รันวงจรการเทรดเฉพาะของแต่ละกลยุทธ์ เพื่อป้องกันการซ้อนกัน
+        """
+        if strategy_name not in self.strategies:
+            logging.error(f"ไม่พบข้อมูลกลยุทธ์ {strategy_name}")
+            return
+            
+        strat = self.strategies[strategy_name]
+        if not strat.get("enabled", True):
+            logging.info(f"🚫 กลยุทธ์ {strategy_name} ถูกปิดใช้งาน ข้ามรอบ")
+            return
+            
+        magic_number = int(strat.get("magic", 123456))
         
-        # 1. ตรวจสอบสถานะตลาดทองคำ (XAUUSD) เพื่อปรับเปลี่ยนสินทรัพย์
+        logging.info(f"⏰ === เริ่มรอบการทำงานของกลยุทธ์: {strategy_name.upper()} (Magic: {magic_number}) ===")
+        
+        # 1. ตรวจสอบสถานะตลาดทองคำ
         if self.is_gold_market_open():
             self.symbol = "XAUUSD"
             self.data_feed.symbol = "GC=F"
             self.data_feed.url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-            self.exchange.contract_size = 100.0  # ทองคำ 1 lot = 100 ounces
-            logging.info("ตลาดทองคำเปิดทำการ เลือกเทรดสินทรัพย์หลัก: XAUUSD")
+            self.exchange.contract_size = 100.0
         else:
             self.symbol = "BTCUSD"
             self.data_feed.symbol = "BTC-USD"
             self.data_feed.url = "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD"
-            self.exchange.contract_size = 1.0   # Bitcoin 1 lot = 1 BTC
-            logging.info("ตลาดทองคำปิดทำการ (ช่วงวันหยุดเสาร์-อาทิตย์) สลับมาเทรดสินทรัพย์สำรอง: BTCUSD (Bitcoin)")
-
-        # 2. ดึงราคาตลาดจริงล่าสุด
+            self.exchange.contract_size = 1.0
+            
+        # 2. ดึงราคาปัจจุบัน
         current_price = self.data_feed.get_current_price()
         if not current_price:
-            logging.error(f"ไม่สามารถตรวจสอบราคาตลาดปัจจุบันสำหรับ {self.symbol} ได้ ข้ามรอบการทำงานนี้")
+            logging.error(f"ไม่สามารถตรวจสอบราคาตลาดสำหรับ {self.symbol} ได้ ข้ามรอบ")
             return
             
         self.exchange.update_price(current_price)
-        status = self.exchange.get_status()
         
-        # 3. ตรวจสอบสถานะพอร์ต
+        # ดึงสถานะคัดกรองตาม Magic Number
+        status = self.exchange.get_status(magic=magic_number)
         open_positions = status['open_positions']
         
-        # หากไม่มีออเดอร์ค้าง และยังไม่พ้นระยะ Hold ให้ข้ามรอบทำงาน (เพื่อประหยัด Token)
-        if not open_positions:
-            now = time.time()
-            if now < getattr(self, 'next_run_time', 0):
-                remaining_sec = self.next_run_time - now
-                logging.info(f"⏳ [Hold Active] สภาพตลาดปัจจุบันอยู่ในช่วงพักวิเคราะห์ (Hold) เพื่อประหยัด Token เหลืออีก {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
-                return
+        # 3. จัดการ ATR Trailing Stop (Python-only)
+        if open_positions:
+            if strat.get("trailing_enabled", True):
+                logging.info(f"⚡ กลยุทธ์ {strategy_name}: พบออเดอร์ค้าง {len(open_positions)} ไม้ -> รัน ATR Trailing Stop (0 Tokens)")
                 
-        logging.info(f"ราคาตลาดปัจจุบันสำหรับ {self.symbol}: {current_price} USD | Equity: ${status['equity']:.2f} | Balance: ${status['balance']:.2f}")
-        
-        if not open_positions:
-            # ----------------------------------------------------
-            # 📌 สาขา A: ไม่มีออเดอร์ว่าง -> วิเคราะห์หาจุดเปิดออเดอร์
-            # ----------------------------------------------------
-            logging.info("สถานะพอร์ต: ไม่มีออเดอร์ค้าง ดึงราคาเพื่อเริ่มวิเคราะห์แบบ Multi-Timeframe (5m, 15m, 1h)...")
+                tf = strat.get("trailing_atr_tf", "5m")
+                period_map = {"1m": "1d", "5m": "1d", "15m": "2d", "30m": "2d", "1h": "5d"}
+                period = period_map.get(tf, "1d")
+                
+                df_hist = self.data_feed.get_historical_data(interval=tf, period=period)
+                df_hist_anal = self.data_feed.analyze_price_action(df_hist)
+                
+                if not df_hist_anal.empty and 'atr_14' in df_hist_anal.columns:
+                    atr = float(df_hist_anal['atr_14'].iloc[-1])
+                else:
+                    atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
+                    
+                activation_dist = atr * float(strat.get("trailing_activation_mult", 1.5))
+                trail_dist = atr * float(strat.get("trailing_distance_mult", 1.5))
+                trail_step = atr * float(strat.get("trailing_step_mult", 0.3))
+                
+                for pos in open_positions:
+                    pos_id = pos['id']
+                    direction = pos['direction']
+                    entry_price = float(pos['entry_price'])
+                    current_sl = pos['sl']
+                    
+                    trail_updated = False
+                    new_sl = None
+                    
+                    if direction == 'BUY':
+                        if current_price - entry_price >= activation_dist:
+                            target_sl = current_price - trail_dist
+                            if current_sl is None or target_sl > float(current_sl):
+                                if current_sl is None or (target_sl - float(current_sl)) >= trail_step:
+                                    new_sl = target_sl
+                                    trail_updated = True
+                    elif direction == 'SELL':
+                        if entry_price - current_price >= activation_dist:
+                            target_sl = current_price + trail_dist
+                            if current_sl is None or target_sl < float(current_sl):
+                                if current_sl is None or (float(current_sl) - target_sl) >= trail_step:
+                                    new_sl = target_sl
+                                    trail_updated = True
+                                    
+                    if trail_updated:
+                        self.exchange.modify_sl_tp(pos_id, new_sl=new_sl)
+                        logging.info(f"📈 [ATR Trailing Stop] เลื่อน SL ของออเดอร์ {pos_id} ไปที่ {new_sl:.2f}")
+                        msg = (
+                            f"📈 **[Sim Mode - ATR Trailing Stop]**\n"
+                            f"**Order ID:** #{pos_id} | **Asset:** {self.symbol} | **Strategy:** {strategy_name.upper()}\n"
+                            f"**Action:** Move SL -> {new_sl:.2f}\n"
+                            f"**Reason:** Price moved in favor with ATR-based activation ({activation_dist:.2f} USD)"
+                        )
+                        self.send_discord_message(msg)
+                        pos['sl'] = new_sl
+            else:
+                logging.info(f"ถือออเดอร์ {len(open_positions)} ไม้ของกลยุทธ์ {strategy_name} ต่อไปโดยไม่มี Trailing Stop")
+            return
             
-            # ดึงประวัติย้อนหลัง 3 กรอบเวลา
+        # 4. ตรวจสอบระยะเวลาพักวิเคราะห์ (Hold) เพื่อประหยัด Token
+        now = time.time()
+        if now < strat.get("next_run_time", 0):
+            remaining_sec = strat["next_run_time"] - now
+            logging.info(f"⏳ [Hold Active] กลยุทธ์ {strategy_name}: อยู่ในช่วงพักวิเคราะห์ เหลือเวลา {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
+            return
+            
+        logging.info(f"กลยุทธ์ {strategy_name}: ไม่มีออเดอร์ค้าง รันระบบวิเคราะห์ด้วย Agent...")
+        
+        # 5. ดึงประวัติย้อนหลังและเตรียมข้อมูลสถิติเพื่อนำมาสะท้อนตนเอง (Self-Reflection)
+        closed_trades = status.get('history', [])
+        perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
+        
+        # 6. เรียกใช้กลยุทธ์ย่อย
+        decision = None
+        if strategy_name == "scalping":
+            df_1m = self.data_feed.get_historical_data(interval="1m", period="1d")
             df_5m = self.data_feed.get_historical_data(interval="5m", period="1d")
             df_15m = self.data_feed.get_historical_data(interval="15m", period="2d")
-            df_1h = self.data_feed.get_historical_data(interval="1h", period="5d")
+            df_30m = self.data_feed.get_historical_data(interval="30m", period="2d")
             
-            # ส่งให้ Analyst Agent วิเคราะห์ด้วยระบบ Multi-Agent M5 Price Action
-            decision = self.agents.analyze_market(
-                df_5m=df_5m,
-                df_15m=df_15m,
-                df_1h=df_1h,
-                balance=self.exchange.balance,
-                symbol=self.symbol,
-                leverage=self.exchange.leverage,
-                spread=0.0 # โหมดจำลองใช้สเปรด 0
+            regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol)
+            decision = self.agents.analyze_scalping(
+                df_1m=df_1m, df_5m=df_5m, df_15m=df_15m, df_30m=df_30m,
+                balance=self.exchange.balance, symbol=self.symbol,
+                leverage=self.exchange.leverage, spread=0.0,
+                performance_stats=perf_stats, trade_history=closed_trades,
+                regime_report=regime
             )
             
-            if not decision:
-                logging.error("ไม่ได้รับข้อมูลการตัดสินใจจาก Analyst Agent")
-                return
-                
-            logging.info(f"คำตัดสินใจของ AI: {decision.get('action')} | เหตุผล: {decision.get('reasoning')}")
+        elif strategy_name == "daytrading":
+            df_15m = self.data_feed.get_historical_data(interval="15m", period="2d")
+            df_1h = self.data_feed.get_historical_data(interval="1h", period="7d")
             
-            # ดำเนินการยิงออเดอร์ตามที่ AI ตัดสินใจ
-            action = decision.get("action")
-            reason = decision.get("reasoning")
-            if action in ["BUY", "SELL"]:
-                lot = decision.get("lot", 0.01)
-                sl = decision.get("sl")
-                tp = decision.get("tp")
+            def resample_h4(df):
+                if df.empty: return df
+                d = df.copy()
+                d.set_index('timestamp', inplace=True)
+                d = d.resample('4H').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}).dropna()
+                d.reset_index(inplace=True)
+                return d
+            df_4h = resample_h4(df_1h)
+            
+            regime = self.agents.analyze_market_regime(df_15m, df_1h, df_4h, symbol=self.symbol)
+            decision = self.agents.analyze_daytrading(
+                df_15m=df_15m, df_1h=df_1h, df_4h=df_4h,
+                balance=self.exchange.balance, symbol=self.symbol,
+                leverage=self.exchange.leverage, spread=0.0,
+                performance_stats=perf_stats, trade_history=closed_trades,
+                regime_report=regime
+            )
+            
+        elif strategy_name == "swingtrading":
+            df_1h = self.data_feed.get_historical_data(interval="1h", period="30d")
+            def resample_h4(df):
+                if df.empty: return df
+                d = df.copy()
+                d.set_index('timestamp', inplace=True)
+                d = d.resample('4H').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}).dropna()
+                d.reset_index(inplace=True)
+                return d
+            df_4h = resample_h4(df_1h)
+            df_1d = self.data_feed.get_historical_data(interval="1d", period="3mo")
+            df_1w = self.data_feed.get_historical_data(interval="1wk", period="1y")
+            
+            regime = self.agents.analyze_market_regime(df_4h, df_1d, df_1w, symbol=self.symbol)
+            decision = self.agents.analyze_swingtrading(
+                df_4h=df_4h, df_1d=df_1d, df_1w=df_1w,
+                balance=self.exchange.balance, symbol=self.symbol,
+                leverage=self.exchange.leverage, spread=0.0,
+                performance_stats=perf_stats, trade_history=closed_trades,
+                regime_report=regime
+            )
+            
+        if not decision:
+            logging.error(f"ไม่ได้รับผลวิเคราะห์สัญญาลักษณ์กลยุทธ์ {strategy_name}")
+            return
+            
+        action = decision.get("action")
+        reason = decision.get("reasoning")
+        logging.info(f"ผลวิเคราะห์ {strategy_name}: {action} | Reasoning: {reason}")
+        
+        if action in ["BUY", "SELL"]:
+            lot = decision.get("lot", 0.01)
+            sl = decision.get("sl")
+            tp = decision.get("tp")
+            
+            max_allowed_lot = float(strat.get("max_lot", 0.01))
+            if lot > max_allowed_lot:
+                lot = max_allowed_lot
                 
-                # Double Verification (ระบบความปลอดภัยตรวจสอบขนาดล็อต)
-                max_allowed_lot = getattr(self, 'max_lot', 0.01)
-                if lot > max_allowed_lot:
-                    logging.warning(f"เตือน: ขนาดล็อตที่ขอมา ({lot}) เกินเพดานสูงสุดที่จำกัดไว้ ({max_allowed_lot}) ปรับล็อตเหลือ {max_allowed_lot}")
-                    lot = max_allowed_lot
-                elif self.exchange.balance < 100.0 and lot > 0.01:
-                    logging.warning(f"เตือน: พอร์ตมีตรรกะเสี่ยงเกินขอบเขต ปรับล็อตลดลงเหลือ 0.01 เพื่อความปลอดภัย (เดิมขอ {lot})")
-                    lot = 0.01
-                    
-                res = self.exchange.open_position(direction=action, lot=lot, sl=sl, tp=tp)
-                logging.info(f"ผลลัพธ์การดำเนินการ: {res}")
-                
-                # ส่งแจ้งเตือน Discord
-                status_text = "เปิดออเดอร์ใหม่สำเร็จ" if res.get("status") == "SUCCESS" else f"ล้มเหลว ({res.get('message', '')})"
+            res = self.exchange.open_position(direction=action, lot=lot, sl=sl, tp=tp, magic=magic_number)
+            
+            if res.get("status") == "SUCCESS":
+                strat["next_run_time"] = 0
                 msg = (
                     f"🟢 **[Sim Mode - New Position]**\n"
-                    f"**Asset:** {self.symbol} | **Action:** {action}\n"
-                    f"**Lot Size:** {lot:.2f} | **Entry Price:** {current_price:.2f}\n"
+                    f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                    f"**Action:** {action} | **Lot Size:** {lot:.2f}\n"
                     f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
-                    f"**Result:** {status_text}\n"
                     f"**Reason:** {reason}"
                 )
                 self.send_discord_message(msg)
-            else:
-                # บันทึกเวลาที่จะต้องพักวิเคราะห์ (Hold) เพื่อประหยัด Token
-                hold_min = int(decision.get("hold_minutes") or 5)
-                if hold_min not in [5, 10, 15, 30]:
-                    hold_min = 5
-                self.hold_minutes = hold_min
-                self.next_run_time = time.time() + (hold_min * 60)
-                
-                logging.info(f"AI ตัดสินใจให้รอดูสถานการณ์ไปก่อน (HOLD) | พักวิเคราะห์ชั่วคราว {hold_min} นาที (จะวิเคราะห์ใหม่ตอน: {datetime.fromtimestamp(self.next_run_time).strftime('%H:%M:%S')})")
-                # ส่งแจ้งเตือน Discord สำหรับ HOLD
-                msg = (
-                    f"🟡 **[Sim Mode - Analyst Alert]**\n"
-                    f"**Asset:** {self.symbol} | **Action:** HOLD (รอดูสัญญาณ)\n"
-                    f"**Hold Duration:** พักวิเคราะห์ {hold_min} นาที\n"
-                    f"**Reason:** {reason}"
-                )
-                self.send_discord_message(msg)
-                
         else:
-            # ----------------------------------------------------
-            # 📌 สาขา B: มีออเดอร์ค้างอยู่ -> จัดการ ATR Trailing Stop (Python เท่านั้น ไม่พึ่ง Agent เพื่อประหยัด Token)
-            # ----------------------------------------------------
-            logging.info(f"สถานะพอร์ต: มีออเดอร์ค้างอยู่ {len(open_positions)} ไม้")
+            hold_min = int(decision.get("hold_minutes") or 5)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            logging.info(f"พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
+            msg = (
+                f"🟡 **[Sim Mode - Strategy Alert]**\n"
+                f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                f"**Action:** HOLD | **Hold Duration:** พัก {hold_min} นาที\n"
+                f"**Reason:** {reason}"
+            )
+            self.send_discord_message(msg)
             
-            # ดึงข้อมูลราคาย้อนหลังเพื่อคำนวณ ATR ตามกรอบเวลาที่ตั้งค่าไว้
-            tf = getattr(self, 'trailing_atr_tf', '5m')
-            period_map = {"1m": "1d", "5m": "1d", "15m": "2d", "1h": "5d"}
-            period = period_map.get(tf, "1d")
-            
-            df_hist = self.data_feed.get_historical_data(interval=tf, period=period)
-            df_hist_anal = self.data_feed.analyze_price_action(df_hist)
-            
-            if not df_hist_anal.empty and 'atr_14' in df_hist_anal.columns:
-                atr = float(df_hist_anal['atr_14'].iloc[-1])
-            else:
-                atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
-                
-            activation_dist = atr * getattr(self, 'trailing_activation_mult', 1.5)
-            trail_dist = atr * getattr(self, 'trailing_distance_mult', 1.5)
-            trail_step = atr * getattr(self, 'trailing_step_mult', 0.3)
-            
-            logging.info(f"📊 [ATR Trailing Config] ATR: {atr:.2f} | Activation: {activation_dist:.2f} | Trail Dist: {trail_dist:.2f} | Trail Step: {trail_step:.2f}")
-            
-            for pos in open_positions:
-                pos_id = pos['id']
-                direction = pos['direction']
-                entry_price = float(pos['entry_price'])
-                current_sl = pos['sl']
-                
-                trail_updated = False
-                new_sl = None
-                
-                if direction == 'BUY':
-                    # ถ้าราคาปัจจุบันวิ่งทำกำไรเกิน activation_dist
-                    if current_price - entry_price >= activation_dist:
-                        target_sl = current_price - trail_dist
-                        # ขยับ SL หากไม่มี SL อยู่ก่อน หรือ SL ใหม่สูงกว่า SL เดิม
-                        if current_sl is None or target_sl > float(current_sl):
-                            # ต้องมากกว่าเดิมอย่างน้อย trail_step
-                            if current_sl is None or (target_sl - float(current_sl)) >= trail_step:
-                                new_sl = target_sl
-                                trail_updated = True
-                elif direction == 'SELL':
-                    # ถ้าราคาปัจจุบันวิ่งทำกำไรเกิน activation_dist (ในทิศทางเซลล์)
-                    if entry_price - current_price >= activation_dist:
-                        target_sl = current_price + trail_dist
-                        # ขยับ SL หากไม่มี SL อยู่ก่อน หรือ SL ใหม่ต่ำกว่า SL เดิม
-                        if current_sl is None or target_sl < float(current_sl):
-                            # ต้องต่ำกว่าเดิมอย่างน้อย trail_step
-                            if current_sl is None or (float(current_sl) - target_sl) >= trail_step:
-                                new_sl = target_sl
-                                trail_updated = True
-                                
-                if trail_updated:
-                    self.exchange.modify_sl_tp(pos_id, new_sl=new_sl)
-                    logging.info(f"📈 [ATR Trailing Stop] เลื่อนจุด SL ของออเดอร์ {pos_id} ไปที่ {new_sl:.2f} (ราคาตลาด {current_price:.2f})")
-                    msg = (
-                        f"📈 **[Sim Mode - ATR Trailing Stop]**\n"
-                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
-                        f"**Action:** Move SL -> {new_sl:.2f}\n"
-                        f"**Reason:** Price moved in favor with ATR-based activation ({activation_dist:.2f} USD)"
-                    )
-                    self.send_discord_message(msg)
-                    pos['sl'] = new_sl
-                else:
-                    logging.info(f"ถือออเดอร์ {pos_id} ต่อไปตามเงื่อนไขเดิม (HOLD) - ยังไม่ถึงเกณฑ์ขยับ SL")
-                    
-        logging.info("=== จบรอบการทำงาน ===\n")
-
-# จุดรันโปรแกรมทดสอบ
-if __name__ == "__main__":
-    # ตรวจสอบ API Key
-    api_key = os.environ.get("MAXPLUS_API_KEY")
-    if not api_key:
-        print("กรุณาตั้งค่าสภาพแวดล้อมระบบด้วยการรันคำสั่ง: export MAXPLUS_API_KEY='คีย์ของคุณ'")
-    else:
-        # เริ่มรันบอทเทรดจำลอง
-        bot = TradingBotOrchestrator(api_key=api_key)
-        bot.run_cycle()
+        logging.info(f"=== จบรอบกลยุทธ์: {strategy_name.upper()} ===\n")

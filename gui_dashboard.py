@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+import queue
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
@@ -11,13 +12,13 @@ from tkinter import ttk, messagebox, scrolledtext
 # นำเข้าตัวควบคุมพอร์ตจำลองและพอร์ตจริง
 from bot_orchestrator import TradingBotOrchestrator
 from bot_orchestrator_mt5 import MT5TradingBotOrchestrator
+from performance_tracker import PerformanceTracker
 
 # ----------------------------------------------------
 # 📌 1. โหลดข้อมูล API Key เริ่มต้น
 # ----------------------------------------------------
 DEFAULT_API_KEY = os.environ.get("MAXPLUS_API_KEY", "")
 
-# สร้างบอทเริ่มต้น (เดี๋ยวคีย์จะถูกอัปเดตจากช่องกรอกใน GUI)
 bot_sim = TradingBotOrchestrator(api_key=DEFAULT_API_KEY)
 bot_mt5 = MT5TradingBotOrchestrator(api_key=DEFAULT_API_KEY)
 
@@ -45,75 +46,139 @@ class TextHandler(logging.Handler):
             self.text_widget.configure(state='disabled')
             self.text_widget.yview('end')
         
-        # ป้องกันปัญหาเธรดขัดแย้ง (Thread Safety) ด้วย after
         try:
             self.text_widget.after(0, append)
         except Exception:
             pass
 
 # ----------------------------------------------------
-# 📌 3. คลาสควบคุมรอบเวลาเบื้องหลัง (Background Scheduler)
+# 📌 3. ระบบคิวเรียงลำดับการทำงาน (Sequential Queue Manager)
+# ----------------------------------------------------
+class StrategyQueueManager:
+    def __init__(self, run_strategy_func):
+        self.task_queue = queue.Queue()
+        self.run_strategy_func = run_strategy_func
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker_thread.start()
+        
+    def add_task(self, strategy_name):
+        current_queue = list(self.task_queue.queue)
+        if strategy_name not in current_queue:
+            logging.info(f"📥 [Queue] เพิ่มกลยุทธ์ {strategy_name.upper()} เข้าสู่คิวเรียงลำดับ...")
+            self.task_queue.put(strategy_name)
+        else:
+            logging.info(f"⏳ [Queue] กลยุทธ์ {strategy_name.upper()} อยู่ในคิวรอแล้ว ข้ามการใส่ซ้ำ")
+            
+    def _worker_loop(self):
+        while True:
+            try:
+                strategy_name = self.task_queue.get()
+                logging.info(f"🚀 [Queue Manager] เริ่มประมวลผลกลยุทธ์: {strategy_name.upper()}")
+                self.run_strategy_func(strategy_name)
+                logging.info(f"✅ [Queue Manager] เสร็จสิ้นกลยุทธ์: {strategy_name.upper()}")
+                self.task_queue.task_done()
+            except Exception as e:
+                logging.error(f"เกิดข้อผิดพลาดใน Queue Manager worker loop: {e}")
+            time.sleep(1)
+
+# ----------------------------------------------------
+# 📌 4. คลาสควบคุมรอบเวลาเบื้องหลัง (Background Scheduler)
 # ----------------------------------------------------
 class BotScheduler(threading.Thread):
-    def __init__(self, run_cycle_func, check_active_func):
+    def __init__(self, check_and_enqueue_func):
         super().__init__(daemon=True)
-        self.run_cycle_func = run_cycle_func
-        self.check_active_func = check_active_func
-        self.last_run_time = 0
+        self.check_and_enqueue_func = check_and_enqueue_func
         
     def run(self):
         while True:
             try:
-                active, interval_min = self.check_active_func()
-                if active:
-                    now = time.time()
-                    interval_sec = interval_min * 60
-                    if now - self.last_run_time >= interval_sec:
-                        self.last_run_time = now
-                        logging.info(f"⏰ [Auto-Pilot] ถึงเวลาตามรอบทำงาน ({interval_min} นาที) - กำลังเริ่มรอบงาน...")
-                        # รันผ่าน thread ย่อยเพื่อป้องกัน GUI ค้าง
-                        t = threading.Thread(target=self.run_cycle_func, daemon=True)
-                        t.start()
+                self.check_and_enqueue_func()
             except Exception as e:
                 logging.error(f"เกิดข้อผิดพลาดใน scheduler loop: {e}")
-            time.sleep(1)
+            time.sleep(5) # เช็คสถานะเวลาทุก 5 วินาที
 
 # ----------------------------------------------------
-# 📌 4. ตัวออกแบบและสร้างหน้าจอ GUI (Main Application)
+# 📌 5. ตัวออกแบบและสร้างหน้าจอ GUI (Main Application)
 # ----------------------------------------------------
 class TradingBotGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("MaxPlus AI Agent Hub - Trading Terminal")
-        self.root.geometry("1200x750")
+        self.root.geometry("1300x850")
         self.root.configure(bg="#0f172a") # Dark Slate Theme
         
         self.scheduler = None
-        self.is_running_cycle = False
+        self.is_running_strategy = False
         
         # ตั้งค่า Fonts & Styles
-        self.font_title = ("Outfit", 12, "bold")
-        self.font_label = ("Outfit", 10)
-        self.font_metric_num = ("Outfit", 20, "bold")
+        self.font_title = ("Outfit", 11, "bold")
+        self.font_label = ("Outfit", 9)
+        self.font_metric_num = ("Outfit", 18, "bold")
         self.font_metric_lbl = ("Outfit", 8, "bold")
         
-        # สร้างตัวแปรเก็บค่าต่างๆ ของระบบควบคุม
+        # คิวตัวแปรเก็บรอบการทำงานล่าสุดเพื่อคุม scheduler
+        self.last_run_times = {
+            "scalping": 0,
+            "daytrading": 0,
+            "swingtrading": 0
+        }
+        
+        # กำหนดตัวแปรกราฟิก
         self.var_mode = tk.StringVar(value="Simulation")
         self.var_auto_pilot = tk.BooleanVar(value=False)
         self.var_analysis_model = tk.StringVar(value="gpt-5.5 (Native: $3.00/1M)")
         self.var_management_model = tk.StringVar(value="gpt-5.4-mini (Native: $2.25/1M)")
         
+        # ตัวแปรแยกกลยุทธ์
+        self.strat_vars = {
+            "scalping": {
+                "enabled": tk.BooleanVar(value=True),
+                "magic": tk.StringVar(value="111111"),
+                "max_lot": tk.StringVar(value="0.05"),
+                "interval": tk.StringVar(value="5"),
+                "trailing_enabled": tk.BooleanVar(value=True),
+                "trailing_atr_tf": tk.StringVar(value="5m"),
+                "trailing_activation_mult": tk.StringVar(value="1.5"),
+                "trailing_distance_mult": tk.StringVar(value="1.5"),
+                "trailing_step_mult": tk.StringVar(value="0.3")
+            },
+            "daytrading": {
+                "enabled": tk.BooleanVar(value=True),
+                "magic": tk.StringVar(value="222222"),
+                "max_lot": tk.StringVar(value="0.05"),
+                "interval": tk.StringVar(value="30"),
+                "trailing_enabled": tk.BooleanVar(value=True),
+                "trailing_atr_tf": tk.StringVar(value="15m"),
+                "trailing_activation_mult": tk.StringVar(value="1.5"),
+                "trailing_distance_mult": tk.StringVar(value="1.5"),
+                "trailing_step_mult": tk.StringVar(value="0.3")
+            },
+            "swingtrading": {
+                "enabled": tk.BooleanVar(value=True),
+                "magic": tk.StringVar(value="333333"),
+                "max_lot": tk.StringVar(value="0.05"),
+                "interval": tk.StringVar(value="240"),
+                "trailing_enabled": tk.BooleanVar(value=False),
+                "trailing_atr_tf": tk.StringVar(value="1h"),
+                "trailing_activation_mult": tk.StringVar(value="1.5"),
+                "trailing_distance_mult": tk.StringVar(value="1.5"),
+                "trailing_step_mult": tk.StringVar(value="0.3")
+            }
+        }
+        
         self.setup_ui()
         self.setup_logging()
+        
+        # โหลดคิวและเริ่มทำงาน
+        self.queue_manager = StrategyQueueManager(self.run_strategy_cycle_safe)
         self.load_config()
         self.start_scheduler()
         
-        # เริ่มต้นลูปอัปเดตราคาพอร์ตและตารางออเดอร์
         self.update_portfolio_loop()
         
     def setup_ui(self):
-        # ออกแบบ Layout สองคอลัมน์หลัก (ซ้าย: ตั้งค่า / ขวา: แสดงสถานะและล็อก)
-        self.left_panel = tk.Frame(self.root, bg="#1e293b", width=350, padx=15, pady=15)
+        # ออกแบบ Layout สองคอลัมน์หลัก
+        self.left_panel = tk.Frame(self.root, bg="#1e293b", width=420, padx=12, pady=12)
         self.left_panel.pack(side="left", fill="y", padx=(10, 5), pady=10)
         self.left_panel.pack_propagate(False)
         
@@ -121,194 +186,234 @@ class TradingBotGUI:
         self.right_panel.pack(side="right", expand=True, fill="both", padx=(5, 10))
         
         # ----------------------------------------------------
-        # 🅰️ ออกแบบเมนูด้านซ้าย: คอนฟิกและปุ่มควบคุม
+        # 🅰️ ออกแบบเมนูด้านซ้าย: คอนฟิกแยกหลาย Page (Notebook)
         # ----------------------------------------------------
+        lbl_head = tk.Label(self.left_panel, text="⚙️ Multi-Agent Dashboard Config", font=("Outfit", 12, "bold"), bg="#1e293b", fg="#f8fafc")
+        lbl_head.pack(anchor="w", pady=(0, 10))
         
-        # 1. หัวข้อระบบบอท
-        lbl_head = tk.Label(self.left_panel, text="🤖 บัญชีและการตั้งค่าบอท", font=self.font_title, bg="#1e293b", fg="#f8fafc")
-        lbl_head.pack(anchor="w", pady=(0, 15))
+        # สร้าง Notebook ในฝั่งซ้ายเพื่อแยกหน้าการตั้งค่า
+        self.config_tabs = ttk.Notebook(self.left_panel)
+        self.config_tabs.pack(fill="both", expand=True, pady=(0, 10))
         
-        # 2. ปรับโหมดการทำงาน
-        tk.Label(self.left_panel, text="Trading Mode (โหมดเทรด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.cb_mode = ttk.Combobox(self.left_panel, textvariable=self.var_mode, values=["Simulation", "MT5 Live"], state="readonly")
-        self.cb_mode.pack(fill="x", pady=(2, 10))
-        self.cb_mode.bind("<<ComboboxSelected>>", self.on_mode_change)
+        # 1. แท็บตั้งค่าระบบส่วนกลาง (Global Setup)
+        self.tab_global = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
+        self.config_tabs.add(self.tab_global, text=" Global Setup ")
+        self.setup_global_tab()
         
-        # 3. ช่องใส่ API Key
-        tk.Label(self.left_panel, text="MaxPlus API Key", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_api_key = tk.Entry(self.left_panel, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=5)
-        self.ent_api_key.pack(fill="x", pady=(2, 10))
+        # 2. แท็บ Scalping Agent
+        self.tab_scalp = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
+        self.config_tabs.add(self.tab_scalp, text=" ⚡ Scalping ")
+        self.setup_strategy_tab(self.tab_scalp, "scalping")
         
-        # 4. รายละเอียด MT5 (แสดงเฉพาะเมื่อใช้งาน MT5 Live)
-        self.frame_mt5 = tk.LabelFrame(self.left_panel, text="⚙️ ตั้งค่า MetaTrader 5 Login", font=self.font_label, bg="#1e293b", fg="#fbbf24", padx=10, pady=10, relief="solid", bd=1)
-        self.frame_mt5.pack(fill="x", pady=(0, 15))
+        # 3. แท็บ Day Trading Agent
+        self.tab_day = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
+        self.config_tabs.add(self.tab_day, text=" 📅 Day Trading ")
+        self.setup_strategy_tab(self.tab_day, "daytrading")
         
-        tk.Label(self.frame_mt5, text="Login ID (หมายเลขบัญชี)", font=("Outfit", 9), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_mt5_login = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=3)
-        self.ent_mt5_login.pack(fill="x", pady=(1, 5))
+        # 4. แท็บ Swing Trading Agent
+        self.tab_swing = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
+        self.config_tabs.add(self.tab_swing, text=" 📈 Swing ")
+        self.setup_strategy_tab(self.tab_swing, "swingtrading")
         
-        tk.Label(self.frame_mt5, text="Password (รหัสผ่าน)", font=("Outfit", 9), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_mt5_pass = tk.Entry(self.frame_mt5, show="*", bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=3)
-        self.ent_mt5_pass.pack(fill="x", pady=(1, 5))
+        # สวิตช์และปุ่มควบคุมระบบออโต้/แมนนวล ด้านล่างของ Left Panel
+        control_frame = tk.LabelFrame(self.left_panel, text="🚦 Control Room", bg="#1e293b", fg="#fbbf24", font=self.font_label, padx=10, pady=5)
+        control_frame.pack(fill="x", pady=5)
         
-        tk.Label(self.frame_mt5, text="Server (เซิร์ฟเวอร์โบรกเกอร์)", font=("Outfit", 9), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_mt5_server = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=3)
-        self.ent_mt5_server.pack(fill="x", pady=(1, 5))
+        self.chk_auto = tk.Checkbutton(control_frame, text="🟢 เปิดระบบ Auto-Pilot รันรอบอัตโนมัติ", variable=self.var_auto_pilot, font=self.font_label, bg="#1e293b", fg="#818cf8", selectcolor="#0f172a", command=self.on_auto_pilot_toggle)
+        self.chk_auto.pack(anchor="w", pady=3)
         
-        # 5. จำกัดความเสี่ยง
-        tk.Label(self.left_panel, text="Max Allowed Lot size (ล็อตสูงสุด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_max_lot = tk.Entry(self.left_panel, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=5)
-        self.ent_max_lot.pack(fill="x", pady=(2, 10))
-        self.ent_max_lot.insert(0, "0.01")
+        btn_save = tk.Button(control_frame, text="💾 Save Configuration", font=self.font_label, bg="#818cf8", fg="#0f172a", activebackground="#a5b4fc", relief="flat", height=1, command=self.save_config)
+        btn_save.pack(fill="x", pady=3)
         
-        # 6. ตั้งค่าช่วงเวลารันบอท (Timer)
-        tk.Label(self.left_panel, text="Interval Cycle (รอบการรันบอทกี่นาที)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_interval = tk.Entry(self.left_panel, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=5)
-        self.ent_interval.pack(fill="x", pady=(2, 10))
-        self.ent_interval.insert(0, "5")
+        # ปุ่มแยกแมนนวลในการรันแต่ละกลยุทธ์
+        manual_btn_frame = tk.Frame(control_frame, bg="#1e293b")
+        manual_btn_frame.pack(fill="x", pady=3)
         
-        # 6.5. เลือกโมเดลสำหรับ Analyst และ Manager พร้อมบอกราคา
-        tk.Label(self.left_panel, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.cb_analysis_model = ttk.Combobox(self.left_panel, textvariable=self.var_analysis_model, values=[
-            "gpt-5.5 (Native: $3.00/1M)",
-            "claude-sonnet-4-6 (Native: $3.00/1M)",
-            "deepseek-v4-pro (DeepSeek: $0.14/1M)",
-            "claude-opus-4-8 (Native: $15.00/1M)"
-        ], state="readonly")
-        self.cb_analysis_model.pack(fill="x", pady=(2, 10))
+        btn_scalp = tk.Button(manual_btn_frame, text="Run Scalping", font=("Outfit", 8, "bold"), bg="#10b981", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("scalping"))
+        btn_scalp.pack(side="left", expand=True, fill="x", padx=1)
         
-        tk.Label(self.left_panel, text="Manager Model (โมเดลควบคุมพอร์ต)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.cb_management_model = ttk.Combobox(self.left_panel, textvariable=self.var_management_model, values=[
-            "gpt-5.4-mini (Native: $2.25/1M)",
-            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
-            "deepseek-v4-flash (DeepSeek: $0.07/1M)"
-        ], state="readonly")
-        self.cb_management_model.pack(fill="x", pady=(2, 10))
+        btn_day = tk.Button(manual_btn_frame, text="Run DayTrade", font=("Outfit", 8, "bold"), bg="#f59e0b", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("daytrading"))
+        btn_day.pack(side="left", expand=True, fill="x", padx=1)
+        
+        btn_swing = tk.Button(manual_btn_frame, text="Run Swing", font=("Outfit", 8, "bold"), bg="#3b82f6", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("swingtrading"))
+        btn_swing.pack(side="left", expand=True, fill="x", padx=1)
+        
+        self.lbl_sched_status = tk.Label(control_frame, text="สถานะ: หยุดการทำงานออโต้", font=self.font_label, bg="#1e293b", fg="#ef4444")
+        self.lbl_sched_status.pack(pady=3)
 
-        # 6.6. ตั้งค่า ATR Trailing Stop (แสดงเป็นกลุ่มช่องกรอกขนาดกะทัดรัด)
-        self.frame_trailing = tk.LabelFrame(self.left_panel, text="⚙️ ตั้งค่า ATR Trailing Stop", font=self.font_label, bg="#1e293b", fg="#10b981", padx=10, pady=5, relief="solid", bd=1)
-        self.frame_trailing.pack(fill="x", pady=(0, 10))
-        
-        # Grid config: 2 columns
-        self.frame_trailing.columnconfigure(0, weight=1)
-        self.frame_trailing.columnconfigure(1, weight=1)
-        
-        # Row 0: TF of ATR
-        tk.Label(self.frame_trailing, text="ATR Timeframe", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=0, column=0, sticky="w", pady=2)
-        self.cb_atr_tf = ttk.Combobox(self.frame_trailing, values=["1m", "5m", "15m", "1h"], width=8, state="readonly")
-        self.cb_atr_tf.grid(row=0, column=1, sticky="ew", pady=2)
-        self.cb_atr_tf.set("5m")
-        
-        # Row 1: Activation Mult
-        tk.Label(self.frame_trailing, text="Activation Mult", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=1, column=0, sticky="w", pady=2)
-        self.ent_activation_mult = tk.Entry(self.frame_trailing, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2, width=8)
-        self.ent_activation_mult.grid(row=1, column=1, sticky="ew", pady=2)
-        self.ent_activation_mult.insert(0, "1.5")
-        
-        # Row 2: Distance Mult
-        tk.Label(self.frame_trailing, text="Distance Mult", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=2, column=0, sticky="w", pady=2)
-        self.ent_distance_mult = tk.Entry(self.frame_trailing, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2, width=8)
-        self.ent_distance_mult.grid(row=2, column=1, sticky="ew", pady=2)
-        self.ent_distance_mult.insert(0, "1.5")
-        
-        # Row 3: Step Mult
-        tk.Label(self.frame_trailing, text="Step Mult", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=3, column=0, sticky="w", pady=2)
-        self.ent_step_mult = tk.Entry(self.frame_trailing, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2, width=8)
-        self.ent_step_mult.grid(row=3, column=1, sticky="ew", pady=2)
-        self.ent_step_mult.insert(0, "0.3")
-        
-        # 7. ปรับสวิตช์ Auto-Pilot
-        self.chk_auto = tk.Checkbutton(self.left_panel, text="⚙️ เปิดใช้ระบบ Auto-Pilot (รันออโต้)", variable=self.var_auto_pilot, font=self.font_label, bg="#1e293b", fg="#818cf8", selectcolor="#0f172a", activebackground="#1e293b", activeforeground="#818cf8", command=self.on_auto_pilot_toggle)
-        self.chk_auto.pack(anchor="w", pady=(5, 10))
-        
-        # 8. ปุ่มหลักในการเซฟการตั้งค่าและยิงระบบแมนนวล
-        btn_save = tk.Button(self.left_panel, text="💾 Save Configuration", font=self.font_label, bg="#818cf8", fg="#0f172a", activebackground="#f472b6", relief="flat", height=2, command=self.save_config)
-        btn_save.pack(fill="x", pady=(0, 10))
-        
-        self.btn_run = tk.Button(self.left_panel, text="⚡ Run Sync Cycle Now", font=self.font_label, bg="#10b981", fg="#f8fafc", activebackground="#34d399", relief="flat", height=2, command=self.trigger_manual_cycle)
-        self.btn_run.pack(fill="x", pady=(0, 10))
-        
-        self.lbl_sched_status = tk.Label(self.left_panel, text="สถานะ: หยุดการทำงานออโต้", font=self.font_label, bg="#1e293b", fg="#ef4444")
-        self.lbl_sched_status.pack(pady=5)
-        
         # ----------------------------------------------------
-        # 🅱️ ออกแบบเมนูด้านขวา: Metrics, Tables, Logs Terminal
+        # 🅱️ ออกแบบเมนูด้านขวา: Metrics, Tables, Performance, Logs
         # ----------------------------------------------------
-        
-        # 1. แผงแสดงยอดเงิน (Metrics Cards Panel)
         self.metrics_frame = tk.Frame(self.right_panel, bg="#0f172a")
-        self.metrics_frame.pack(fill="x", pady=(0, 15))
+        self.metrics_frame.pack(fill="x", pady=(0, 10))
         
         self.card_balance = self.create_metric_card(self.metrics_frame, "BALANCE", "$0.00", "#f8fafc")
-        self.card_balance.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.card_balance.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         
         self.card_equity = self.create_metric_card(self.metrics_frame, "EQUITY", "$0.00", "#f8fafc")
-        self.card_equity.grid(row=0, column=1, sticky="nsew", padx=10)
+        self.card_equity.grid(row=0, column=1, sticky="nsew", padx=5)
         
         self.card_pnl = self.create_metric_card(self.metrics_frame, "FLOATING P&L", "$0.00", "#10b981")
-        self.card_pnl.grid(row=0, column=2, sticky="nsew", padx=10)
+        self.card_pnl.grid(row=0, column=2, sticky="nsew", padx=5)
         
         self.card_price = self.create_metric_card(self.metrics_frame, "CURRENT PRICE", "0.00 (Offline)", "#fbbf24")
-        self.card_price.grid(row=0, column=3, sticky="nsew", padx=(10, 0))
+        self.card_price.grid(row=0, column=3, sticky="nsew", padx=(5, 0))
         
         self.metrics_frame.columnconfigure((0, 1, 2, 3), weight=1)
         
-        # 2. แผงตารางการเทรด (Active Positions & Closed Trades History)
         self.tabs = ttk.Notebook(self.right_panel)
-        self.tabs.pack(fill="both", expand=True, pady=(0, 15))
+        self.tabs.pack(fill="both", expand=True, pady=(0, 10))
         
-        # แท็บที่ 1: ออเดอร์ถือค้างอยู่
+        # แท็บที่ 1: Active Positions
         self.tab_active = tk.Frame(self.tabs, bg="#1e293b")
         self.tabs.add(self.tab_active, text=" Active Positions ")
         self.setup_positions_table()
         
-        # แท็บที่ 2: ประวัติการเทรดที่ปิดแล้ว
+        # แท็บที่ 2: Trade History
         self.tab_history = tk.Frame(self.tabs, bg="#1e293b")
         self.tabs.add(self.tab_history, text=" Trade History ")
         self.setup_history_table()
         
-        # 3. แผงควบคุมระบบ Log Terminal
-        self.log_frame = tk.Frame(self.right_panel, bg="#1e293b", padx=10, pady=10)
+        # แท็บที่ 3: Performance Statistics
+        self.tab_perf = tk.Frame(self.tabs, bg="#1e293b")
+        self.tabs.add(self.tab_perf, text=" 📊 Performance Statistics ")
+        self.setup_performance_tab()
+        
+        # กล่องแสดงบันทึก LOG ด้านล่าง
+        self.log_frame = tk.Frame(self.right_panel, bg="#1e293b", padx=10, pady=8)
         self.log_frame.pack(fill="x", side="bottom")
         
-        lbl_log_title = tk.Label(self.log_frame, text="💻 AI Trading Logging Terminal", font=self.font_title, bg="#1e293b", fg="#f8fafc")
-        lbl_log_title.pack(anchor="w", pady=(0, 5))
+        lbl_log_title = tk.Label(self.log_frame, text="💻 AI Multi-Agent Logging Terminal", font=self.font_title, bg="#1e293b", fg="#f8fafc")
+        lbl_log_title.pack(anchor="w", pady=(0, 3))
         
-        # ตัวกล่องข้อความ Log เลื่อนดูได้
-        self.log_text = scrolledtext.ScrolledText(self.log_frame, height=10, bg="#020617", fg="#f8fafc", insertbackground="white", font=("JetBrains Mono", 8))
+        self.log_text = scrolledtext.ScrolledText(self.log_frame, height=9, bg="#020617", fg="#f8fafc", insertbackground="white", font=("JetBrains Mono", 8))
         self.log_text.pack(fill="x", expand=True)
-        
-        # แท็กทำสีบันทึก
         self.log_text.tag_config('error', foreground="#ef4444")
         self.log_text.tag_config('warning', foreground="#fbbf24")
         self.log_text.tag_config('success', foreground="#10b981")
         self.log_text.tag_config('info', foreground="#f8fafc")
         self.log_text.configure(state='disabled')
         
-    def create_metric_card(self, parent, title, initial_value, num_color):
-        card = tk.Frame(parent, bg="#1e293b", padx=15, pady=15, relief="flat")
+    def setup_global_tab(self):
+        # 1. ปรับโหมดการทำงาน
+        tk.Label(self.tab_global, text="Trading Mode (โหมดเทรด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.cb_mode = ttk.Combobox(self.tab_global, textvariable=self.var_mode, values=["Simulation", "MT5 Live"], state="readonly")
+        self.cb_mode.pack(fill="x", pady=(0, 10))
+        self.cb_mode.bind("<<ComboboxSelected>>", self.on_mode_change)
         
+        # 2. ช่องใส่ API Key
+        tk.Label(self.tab_global, text="MaxPlus API Key", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.ent_api_key = tk.Entry(self.tab_global, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=3)
+        self.ent_api_key.pack(fill="x", pady=(0, 10))
+        
+        # 3. รายละเอียด MT5
+        self.frame_mt5 = tk.LabelFrame(self.tab_global, text="⚙️ ตั้งค่า MetaTrader 5 Login", font=self.font_label, bg="#1e293b", fg="#fbbf24", padx=10, pady=5, relief="solid", bd=1)
+        self.frame_mt5.pack(fill="x", pady=(0, 10))
+        
+        tk.Label(self.frame_mt5, text="Login ID (หมายเลขบัญชี)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.ent_mt5_login = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        self.ent_mt5_login.pack(fill="x", pady=(1, 5))
+        
+        tk.Label(self.frame_mt5, text="Password (รหัสผ่าน)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.ent_mt5_pass = tk.Entry(self.frame_mt5, show="*", bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        self.ent_mt5_pass.pack(fill="x", pady=(1, 5))
+        
+        tk.Label(self.frame_mt5, text="Server (เซิร์ฟเวอร์โบรกเกอร์)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.ent_mt5_server = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        self.ent_mt5_server.pack(fill="x", pady=(1, 5))
+        
+        # 4. เลือกโมเดลสำหรับ Analyst และ Manager
+        tk.Label(self.tab_global, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.cb_analysis_model = ttk.Combobox(self.tab_global, textvariable=self.var_analysis_model, values=[
+            "gpt-5.5 (Native: $3.00/1M)",
+            "claude-sonnet-4-6 (Native: $3.00/1M)",
+            "deepseek-v4-pro (DeepSeek: $0.14/1M)",
+            "claude-opus-4-8 (Native: $15.00/1M)"
+        ], state="readonly")
+        self.cb_analysis_model.pack(fill="x", pady=(0, 10))
+        
+        tk.Label(self.tab_global, text="Manager Model (โมเดลควบคุมพอร์ต)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.cb_management_model = ttk.Combobox(self.tab_global, textvariable=self.var_management_model, values=[
+            "gpt-5.4-mini (Native: $2.25/1M)",
+            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
+            "deepseek-v4-flash (DeepSeek: $0.07/1M)"
+        ], state="readonly")
+        self.cb_management_model.pack(fill="x", pady=(0, 10))
+
+    def setup_strategy_tab(self, parent_frame, strat_name):
+        vars_dict = self.strat_vars[strat_name]
+        
+        # บังคับจัดกริด
+        parent_frame.columnconfigure(0, weight=1)
+        parent_frame.columnconfigure(1, weight=1)
+        
+        # Row 0: Enabled/Disabled Strategy
+        chk_enable = tk.Checkbutton(parent_frame, text="เปิดใช้งานกลยุทธ์นี้", variable=vars_dict["enabled"], font=("Outfit", 9, "bold"), bg="#1e293b", fg="#10b981", selectcolor="#0f172a")
+        chk_enable.grid(row=0, column=0, columnspan=2, sticky="w", pady=(5, 10))
+        
+        # Row 1: Magic Number
+        tk.Label(parent_frame, text="Magic Number", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=1, column=0, sticky="w", pady=3)
+        ent_magic = tk.Entry(parent_frame, textvariable=vars_dict["magic"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        ent_magic.grid(row=1, column=1, sticky="ew", pady=3)
+        
+        # Row 2: Max Lot
+        tk.Label(parent_frame, text="Max Lot Size", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=2, column=0, sticky="w", pady=3)
+        ent_max_lot = tk.Entry(parent_frame, textvariable=vars_dict["max_lot"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        ent_max_lot.grid(row=2, column=1, sticky="ew", pady=3)
+        
+        # Row 3: Run Cycle Interval (Minutes)
+        tk.Label(parent_frame, text="Run Interval (นาที)", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=3, column=0, sticky="w", pady=3)
+        ent_interval = tk.Entry(parent_frame, textvariable=vars_dict["interval"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        ent_interval.grid(row=3, column=1, sticky="ew", pady=3)
+        
+        # แผงหัวข้อย่อย Trailing Config
+        lbl_trailing_sec = tk.Label(parent_frame, text="🛡️ การตั้งค่า Trailing Stop", font=("Outfit", 9, "bold"), bg="#1e293b", fg="#fbbf24")
+        lbl_trailing_sec.grid(row=4, column=0, columnspan=2, sticky="w", pady=(15, 5))
+        
+        # Row 5: Trailing Enabled
+        chk_trail = tk.Checkbutton(parent_frame, text="เปิดใช้ ATR Trailing Stop", variable=vars_dict["trailing_enabled"], font=self.font_label, bg="#1e293b", fg="#fbbf24", selectcolor="#0f172a")
+        chk_trail.grid(row=5, column=0, columnspan=2, sticky="w", pady=3)
+        
+        # Row 6: ATR Timeframe
+        tk.Label(parent_frame, text="ATR Timeframe", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=6, column=0, sticky="w", pady=3)
+        cb_atr_tf = ttk.Combobox(parent_frame, textvariable=vars_dict["trailing_atr_tf"], values=["1m", "5m", "15m", "1h"], state="readonly")
+        cb_atr_tf.grid(row=6, column=1, sticky="ew", pady=3)
+        
+        # Row 7: Activation Mult
+        tk.Label(parent_frame, text="Activation Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=7, column=0, sticky="w", pady=3)
+        ent_act_mult = tk.Entry(parent_frame, textvariable=vars_dict["trailing_activation_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        ent_act_mult.grid(row=7, column=1, sticky="ew", pady=3)
+        
+        # Row 8: Distance Mult
+        tk.Label(parent_frame, text="Distance Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=8, column=0, sticky="w", pady=3)
+        ent_dist_mult = tk.Entry(parent_frame, textvariable=vars_dict["trailing_distance_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        ent_dist_mult.grid(row=8, column=1, sticky="ew", pady=3)
+        
+        # Row 9: Step Mult
+        tk.Label(parent_frame, text="Step Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=9, column=0, sticky="w", pady=3)
+        ent_step_mult = tk.Entry(parent_frame, textvariable=vars_dict["trailing_step_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        ent_step_mult.grid(row=9, column=1, sticky="ew", pady=3)
+
+    def create_metric_card(self, parent, title, initial_value, num_color):
+        card = tk.Frame(parent, bg="#1e293b", padx=12, pady=12, relief="flat")
         lbl_title = tk.Label(card, text=title, font=self.font_metric_lbl, bg="#1e293b", fg="#94a3b8")
         lbl_title.pack(anchor="w")
-        
         lbl_val = tk.Label(card, text=initial_value, font=self.font_metric_num, bg="#1e293b", fg=num_color)
-        lbl_val.pack(anchor="w", pady=(5, 0))
-        
-        # บันทึก label ค่าไว้ใช้อัปเดต
+        lbl_val.pack(anchor="w", pady=(4, 0))
         card.lbl_val = lbl_val
         return card
         
     def setup_positions_table(self):
-        # เฟรมตารางออเดอร์ค้าง + ปุ่มสั่งปิด
         tbl_frame = tk.Frame(self.tab_active, bg="#1e293b", padx=5, pady=5)
         tbl_frame.pack(fill="both", expand=True)
         
-        columns = ("ticket", "dir", "lot", "entry", "sl", "tp", "pnl")
+        # เพิ่มคอลัมน์ "Strategy" เพื่อระบุว่าออเดอร์เปิดจาก Agent ใด
+        columns = ("ticket", "strategy", "dir", "lot", "entry", "sl", "tp", "pnl")
         self.tree_positions = ttk.Treeview(tbl_frame, columns=columns, show="headings", height=5)
         self.tree_positions.pack(side="left", fill="both", expand=True)
         
-        # ตั้งชื่อคอลัมน์ภาษาไทย/อังกฤษ
         self.tree_positions.heading("ticket", text="Ticket ID")
+        self.tree_positions.heading("strategy", text="Strategy Agent")
         self.tree_positions.heading("dir", text="Direction")
         self.tree_positions.heading("lot", text="Lot Size")
         self.tree_positions.heading("entry", text="Entry Price")
@@ -316,29 +421,29 @@ class TradingBotGUI:
         self.tree_positions.heading("tp", text="Take Profit")
         self.tree_positions.heading("pnl", text="Floating P&L")
         
-        # กำหนดขนาดคอลัมน์
         for col in columns:
-            self.tree_positions.column(col, width=100, anchor="center")
+            self.tree_positions.column(col, width=90, anchor="center")
             
         scrollbar = ttk.Scrollbar(tbl_frame, orient="vertical", command=self.tree_positions.yview)
         self.tree_positions.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         
-        # เพิ่มปุ่มปิดไม้
         btn_frame = tk.Frame(self.tab_active, bg="#1e293b", pady=5)
         btn_frame.pack(fill="x")
-        btn_close = tk.Button(btn_frame, text="🛑 Close Selected Position (สั่งปิดไม้ที่เลือก)", font=self.font_label, bg="#ef4444", fg="white", activebackground="#dc2626", command=self.close_selected_position)
+        btn_close = tk.Button(btn_frame, text="🛑 Close Selected Position", font=self.font_label, bg="#ef4444", fg="white", relief="flat", command=self.close_selected_position)
         btn_close.pack(side="right", padx=10)
         
     def setup_history_table(self):
         tbl_frame = tk.Frame(self.tab_history, bg="#1e293b", padx=5, pady=5)
         tbl_frame.pack(fill="both", expand=True)
         
-        columns = ("ticket", "dir", "lot", "entry", "close", "pnl", "open_time", "close_time", "reason")
+        # เพิ่มคอลัมน์ "Strategy" ในประวัติการปิดออเดอร์เช่นกัน
+        columns = ("ticket", "strategy", "dir", "lot", "entry", "close", "pnl", "open_time", "close_time", "reason")
         self.tree_history = ttk.Treeview(tbl_frame, columns=columns, show="headings", height=5)
         self.tree_history.pack(side="left", fill="both", expand=True)
         
         self.tree_history.heading("ticket", text="Ticket ID")
+        self.tree_history.heading("strategy", text="Strategy Agent")
         self.tree_history.heading("dir", text="Direction")
         self.tree_history.heading("lot", text="Lot Size")
         self.tree_history.heading("entry", text="Entry Price")
@@ -349,47 +454,64 @@ class TradingBotGUI:
         self.tree_history.heading("reason", text="Reason")
         
         for col in columns:
-            self.tree_history.column(col, width=90, anchor="center")
+            self.tree_history.column(col, width=80, anchor="center")
             
         scrollbar = ttk.Scrollbar(tbl_frame, orient="vertical", command=self.tree_history.yview)
         self.tree_history.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
+
+    def setup_performance_tab(self):
+        # หน้าต่างเปรียบเทียบสถิติของทั้ง 3 Strategies
+        perf_frame = tk.Frame(self.tab_perf, bg="#1e293b", padx=15, pady=15)
+        perf_frame.pack(fill="both", expand=True)
         
+        # ออกแบบตาราง Grid เปรียบเทียบ
+        # หัวคอลัมน์: Metric | Scalping | Day Trading | Swing Trading
+        headers = ["📊 PERFORMANCE METRIC", "⚡ SCALPING AGENT", "📅 DAY TRADING AGENT", "📈 SWING TRADING AGENT"]
+        for idx, h in enumerate(headers):
+            lbl = tk.Label(perf_frame, text=h, font=("Outfit", 10, "bold"), bg="#1e293b", fg="#fbbf24" if idx > 0 else "#94a3b8")
+            lbl.grid(row=0, column=idx, sticky="ew", padx=10, pady=8)
+            perf_frame.columnconfigure(idx, weight=1)
+            
+        metrics_rows = [
+            ("total_trades", "Total Trades (จำนวนไม้รวม)"),
+            ("win_rate", "Win Rate (อัตราการชนะ %)"),
+            ("profit_factor", "Profit Factor (ปัจจัยกำไร)"),
+            ("expectancy", "Expectancy (คาดหวังรายไม้ $)"),
+            ("avg_hold_time_mins", "Avg Hold Time (ถือครองเฉลี่ย นาที)"),
+            ("avg_r", "Average R-Reward Ratio"),
+            ("max_drawdown_usd", "Max Drawdown (ติดลบสูงสุด $)")
+        ]
+        
+        self.perf_labels = {} # สำหรับเก็บ Label Widget เพื่อนำไปเปลี่ยนค่า
+        
+        for row_idx, (key, text) in enumerate(metrics_rows, start=1):
+            # คอลัมน์ 0: ข้อความ
+            lbl_metric = tk.Label(perf_frame, text=text, font=("Outfit", 9, "bold"), bg="#1e293b", fg="#cbd5e1", anchor="w")
+            lbl_metric.grid(row=row_idx, column=0, sticky="w", padx=10, pady=6)
+            
+            self.perf_labels[key] = {}
+            for col_idx, strat_name in enumerate(["scalping", "daytrading", "swingtrading"], start=1):
+                val_lbl = tk.Label(perf_frame, text="-", font=("Outfit", 10), bg="#1e293b", fg="#f8fafc")
+                val_lbl.grid(row=row_idx, column=col_idx, sticky="center", padx=10, pady=6)
+                self.perf_labels[key][strat_name] = val_lbl
+
     def setup_logging(self):
-        # เชื่อม Log บันทึกของโปรเจ็กต์เข้ามาแสดงใน ScrolledText
-        self.handler = TextHandler(self.log_text)
-        self.handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger = logging.getLogger()
-        logger.addHandler(self.handler)
-        logging.info("เริ่มต้น GUI Dashboard สำเร็จ! ข้อมูล Log ระบบจะมาแสดงในช่องนี้...")
+        log_handler = TextHandler(self.log_text)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        log_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(log_handler)
         
-    # ----------------------------------------------------
-    # 📌 5. ฟังก์ชันการจัดการบันทึก/โหลด Configuration JSON
-    # ----------------------------------------------------
     def load_config(self):
-        config_path = "gui_config.json"
-        
-        # ดึง API Key ปัจจุบัน
-        self.ent_api_key.insert(0, DEFAULT_API_KEY)
-        
-        if os.path.exists(config_path):
+        if os.path.exists("gui_config.json"):
             try:
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open("gui_config.json", "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                     
                 self.var_mode.set(cfg.get("mode", "Simulation"))
-                
                 self.ent_api_key.delete(0, 'end')
                 self.ent_api_key.insert(0, cfg.get("api_key", DEFAULT_API_KEY))
-                
-                self.ent_max_lot.delete(0, 'end')
-                self.ent_max_lot.insert(0, str(cfg.get("max_lot", 0.01)))
-                
-                self.ent_interval.delete(0, 'end')
-                self.ent_interval.insert(0, str(cfg.get("interval_minutes", 5)))
-                
                 self.var_auto_pilot.set(cfg.get("auto_pilot", False))
-                
                 self.ent_mt5_login.delete(0, 'end')
                 self.ent_mt5_login.insert(0, str(cfg.get("mt5_login", "")))
                 self.ent_mt5_pass.delete(0, 'end')
@@ -400,55 +522,65 @@ class TradingBotGUI:
                 self.var_analysis_model.set(cfg.get("analysis_model", "gpt-5.5 (Native: $3.00/1M)"))
                 self.var_management_model.set(cfg.get("management_model", "gpt-5.4-mini (Native: $2.25/1M)"))
                 
-                # โหลดค่าตั้งค่า Trailing
-                self.cb_atr_tf.set(cfg.get("trailing_atr_tf", "5m"))
-                self.ent_activation_mult.delete(0, 'end')
-                self.ent_activation_mult.insert(0, str(cfg.get("trailing_activation_mult", 1.5)))
-                self.ent_distance_mult.delete(0, 'end')
-                self.ent_distance_mult.insert(0, str(cfg.get("trailing_distance_mult", 1.5)))
-                self.ent_step_mult.delete(0, 'end')
-                self.ent_step_mult.insert(0, str(cfg.get("trailing_step_mult", 0.3)))
-                
-                # บังคับซิงค์ค่าไปยังบอท
+                # โหลดค่าแต่ละกลยุทธ์
+                for name, s_dict in self.strat_vars.items():
+                    s_cfg = cfg.get(name, {})
+                    if s_cfg:
+                        s_dict["enabled"].set(s_cfg.get("enabled", True))
+                        s_dict["magic"].set(str(s_cfg.get("magic", s_dict["magic"].get())))
+                        s_dict["max_lot"].set(str(s_cfg.get("max_lot", s_dict["max_lot"].get())))
+                        s_dict["interval"].set(str(s_cfg.get("interval", s_dict["interval"].get())))
+                        s_dict["trailing_enabled"].set(s_cfg.get("trailing_enabled", s_dict["trailing_enabled"].get()))
+                        s_dict["trailing_atr_tf"].set(s_cfg.get("trailing_atr_tf", s_dict["trailing_atr_tf"].get()))
+                        s_dict["trailing_activation_mult"].set(str(s_cfg.get("trailing_activation_mult", s_dict["trailing_activation_mult"].get())))
+                        s_dict["trailing_distance_mult"].set(str(s_cfg.get("trailing_distance_mult", s_dict["trailing_distance_mult"].get())))
+                        s_dict["trailing_step_mult"].set(str(s_cfg.get("trailing_step_mult", s_dict["trailing_step_mult"].get())))
+                        
                 self.apply_config_to_bots(cfg)
-                
             except Exception as e:
                 logging.error(f"โหลดไฟล์ตั้งค่าล้มเหลว: {e}")
                 
         self.on_mode_change()
         self.on_auto_pilot_toggle()
-        
+
     def save_config(self):
         try:
             cfg = {
                 "mode": self.var_mode.get(),
                 "api_key": self.ent_api_key.get(),
-                "max_lot": float(self.ent_max_lot.get() or 0.01),
-                "interval_minutes": int(self.ent_interval.get() or 5),
                 "auto_pilot": self.var_auto_pilot.get(),
                 "analysis_model": self.var_analysis_model.get(),
                 "management_model": self.var_management_model.get(),
                 "mt5_login": self.ent_mt5_login.get(),
                 "mt5_pass": self.ent_mt5_pass.get(),
-                "mt5_server": self.ent_mt5_server.get(),
-                "trailing_atr_tf": self.cb_atr_tf.get(),
-                "trailing_activation_mult": float(self.ent_activation_mult.get() or 1.5),
-                "trailing_distance_mult": float(self.ent_distance_mult.get() or 1.5),
-                "trailing_step_mult": float(self.ent_step_mult.get() or 0.3)
+                "mt5_server": self.ent_mt5_server.get()
             }
             
+            # เก็บค่ารายกลยุทธ์
+            for name, s_dict in self.strat_vars.items():
+                cfg[name] = {
+                    "enabled": s_dict["enabled"].get(),
+                    "magic": int(s_dict["magic"].get() or 0),
+                    "max_lot": float(s_dict["max_lot"].get() or 0.01),
+                    "interval": int(s_dict["interval"].get() or 5),
+                    "trailing_enabled": s_dict["trailing_enabled"].get(),
+                    "trailing_atr_tf": s_dict["trailing_atr_tf"].get(),
+                    "trailing_activation_mult": float(s_dict["trailing_activation_mult"].get() or 1.5),
+                    "trailing_distance_mult": float(s_dict["trailing_distance_mult"].get() or 1.5),
+                    "trailing_step_mult": float(s_dict["trailing_step_mult"].get() or 0.3)
+                }
+                
             with open("gui_config.json", "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
                 
             self.apply_config_to_bots(cfg)
             logging.info("💾 บันทึกการตั้งค่าลงไฟล์ gui_config.json สำเร็จ!")
-            messagebox.showinfo("สำเร็จ", "บันทึกการตั้งค่าและซิงค์ตัวแปรเข้าสู่ระบบสำเร็จ!")
+            messagebox.showinfo("สำเร็จ", "บันทึกการตั้งค่าและซิงค์ตัวแปรของกลยุทธ์ทั้งหมดเข้าสู่ระบบสำเร็จ!")
         except Exception as e:
             logging.error(f"ไม่สามารถบันทึกค่าลงไฟล์ได้: {e}")
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถบันทึกการตั้งค่าได้: {e}")
-            
+
     def apply_config_to_bots(self, cfg):
-        # อัปเดต API Key
         key = cfg.get("api_key", "")
         if key:
             bot_sim.agents.api_key = key
@@ -456,20 +588,13 @@ class TradingBotGUI:
             bot_mt5.agents.api_key = key
             bot_mt5.agents.headers["Authorization"] = f"Bearer {key}"
             
-        # อัปเดตโมเดล AI
         analysis_model = cfg.get("analysis_model", "gpt-5.5").split()[0]
         management_model = cfg.get("management_model", "gpt-5.4-mini").split()[0]
         bot_sim.agents.analysis_model = analysis_model
         bot_mt5.agents.analysis_model = analysis_model
         bot_sim.agents.management_model = management_model
         bot_mt5.agents.management_model = management_model
-            
-        # อัปเดตล็อตสูงสุด
-        max_lot = float(cfg.get("max_lot", 0.01))
-        bot_sim.max_lot = max_lot
-        bot_mt5.max_lot = max_lot
         
-        # อัปเดตบัญชี MT5
         login = cfg.get("mt5_login", "")
         pwd = cfg.get("mt5_pass", "")
         srv = cfg.get("mt5_server", "")
@@ -480,109 +605,139 @@ class TradingBotGUI:
         if srv:
             bot_mt5.mt5_bridge.server = srv
             
-        # อัปเดตค่าตั้งค่า Trailing Stop และ ATR ให้บอททั้งสองตัว
-        for bot in [bot_sim, bot_mt5]:
-            bot.trailing_activation_mult = float(cfg.get("trailing_activation_mult", 1.5))
-            bot.trailing_distance_mult = float(cfg.get("trailing_distance_mult", 1.5))
-            bot.trailing_step_mult = float(cfg.get("trailing_step_mult", 0.3))
-            bot.trailing_atr_tf = cfg.get("trailing_atr_tf", "5m")
+        # สมัครโครงสร้างกลยุทธ์ทั้ง 3 ตัวเข้าสู่บอทประมวลผล
+        for name in ["scalping", "daytrading", "swingtrading"]:
+            s_cfg = cfg.get(name, {})
+            if s_cfg:
+                for bot in [bot_sim, bot_mt5]:
+                    bot.strategies[name]["enabled"] = s_cfg.get("enabled", True)
+                    bot.strategies[name]["magic"] = s_cfg.get("magic", 123456)
+                    bot.strategies[name]["max_lot"] = s_cfg.get("max_lot", 0.01)
+                    bot.strategies[name]["trailing_enabled"] = s_cfg.get("trailing_enabled", True)
+                    bot.strategies[name]["trailing_atr_tf"] = s_cfg.get("trailing_atr_tf", "5m")
+                    bot.strategies[name]["trailing_activation_mult"] = s_cfg.get("trailing_activation_mult", 1.5)
+                    bot.strategies[name]["trailing_distance_mult"] = s_cfg.get("trailing_distance_mult", 1.5)
+                    bot.strategies[name]["trailing_step_mult"] = s_cfg.get("trailing_step_mult", 0.3)
 
     def on_mode_change(self, event=None):
         mode = self.var_mode.get()
         if mode == "Simulation":
-            self.frame_mt5.pack_forget() # ซ่อนกล่องล็อกอิน MT5
+            self.frame_mt5.pack_forget()
         else:
-            # ดึงกล่องตั้งค่า MT5 ขึ้นมาแสดงใต้กล่อง API Key
-            self.frame_mt5.pack(fill="x", after=self.ent_api_key, pady=(0, 15))
+            self.frame_mt5.pack(fill="x", after=self.ent_api_key, pady=(0, 10))
 
     def on_auto_pilot_toggle(self):
         active = self.var_auto_pilot.get()
         if active:
-            interval = self.ent_interval.get()
-            self.lbl_sched_status.config(text=f"สถานะ: Auto-Pilot ทำงาน (ทุก {interval} นาที)", fg="#10b981")
+            # ดึงเวลาแต่ละตัวมาแจ้งเตือน
+            t_sc = self.strat_vars["scalping"]["interval"].get()
+            t_dt = self.strat_vars["daytrading"]["interval"].get()
+            t_sw = self.strat_vars["swingtrading"]["interval"].get()
+            self.lbl_sched_status.config(
+                text=f"สถานะ: Auto-Pilot ทำงาน (Scalp:{t_sc}m | Day:{t_dt}m | Swing:{t_sw}m)", 
+                fg="#10b981"
+            )
         else:
             self.lbl_sched_status.config(text="สถานะ: หยุดการทำงานออโต้", fg="#ef4444")
-            
-    # ----------------------------------------------------
-    # 📌 6. การเริ่มระบบ Background Scheduler
-    # ----------------------------------------------------
-    def start_scheduler(self):
-        # สร้างฟังก์ชันให้ดึงสถานะตั้งค่าเพื่อตรวจสอบการรันในเธรดหลังบ้าน
-        def check_active():
-            return self.var_auto_pilot.get(), int(self.ent_interval.get() or 5)
-            
-        def run_cycle_safe():
-            # รันผ่านระบบ sync ความปลอดภัยป้องกันการรันซ้อน
-            if self.is_running_cycle:
-                return
-            self.is_running_cycle = True
-            self.btn_run.configure(state='disabled', text="🔄 Running Cycle...")
-            
-            try:
-                # ซิงค์ค่าล่าสุดจากหน้าจอ UI ก่อนรันรอบงาน
-                cfg = {
-                    "mode": self.var_mode.get(),
-                    "api_key": self.ent_api_key.get(),
-                    "max_lot": float(self.ent_max_lot.get() or 0.01),
-                    "interval_minutes": int(self.ent_interval.get() or 5),
-                    "auto_pilot": self.var_auto_pilot.get(),
-                    "mt5_login": self.ent_mt5_login.get(),
-                    "mt5_pass": self.ent_mt5_pass.get(),
-                    "mt5_server": self.ent_mt5_server.get()
-                }
-                self.apply_config_to_bots(cfg)
-                
-                mode = cfg["mode"]
-                if mode == "Simulation":
-                    bot_sim.run_cycle()
-                else:
-                    bot_mt5.run_cycle()
-            except Exception as e:
-                logging.error(f"การรันวงจรประเมินผิดพลาด: {e}")
-            finally:
-                self.is_running_cycle = False
-                self.btn_run.configure(state='normal', text="⚡ Run Sync Cycle Now")
-                
-        self.run_cycle_safe_func = run_cycle_safe
-        self.scheduler = BotScheduler(run_cycle_safe, check_active)
-        self.scheduler.start()
-        
-    def trigger_manual_cycle(self):
-        if self.is_running_cycle:
-            messagebox.showwarning("คำเตือน", "บอทกำลังรันประมวลผลรอบปัจจุบันอยู่ กรุณารอสักครู่")
-            return
-            
-        logging.info("⚡ สั่งรันวิเคราะห์รอบตลาดทันที (Manual Trigger)...")
-        # รันใน Thread เพื่อไม่ให้หน้าจอค้าง
-        t = threading.Thread(target=self.run_cycle_safe_func, daemon=True)
-        t.start()
 
-    # ----------------------------------------------------
-    # 📌 7. ลูปอัปเดตข้อมูลพอร์ตและตารางธุรกรรม (3 วินาทีครั้ง)
-    # ----------------------------------------------------
+    def start_scheduler(self):
+        def check_and_enqueue():
+            if not self.var_auto_pilot.get():
+                return
+                
+            now = time.time()
+            for name, s_dict in self.strat_vars.items():
+                if not s_dict["enabled"].get():
+                    continue
+                    
+                interval_min = int(s_dict["interval"].get() or 5)
+                interval_sec = interval_min * 60
+                
+                # ตรวจเช็คเวลาที่ผ่านมาเทียบรอบการรันล่าสุด
+                if now - self.last_run_times[name] >= interval_sec:
+                    # อัปเดตเวลารันล่าสุด (กันไม่ให้เรียกซ้อนขณะต่อคิว)
+                    self.last_run_times[name] = now
+                    logging.info(f"⏰ [Auto-Pilot] ถึงรอบรันกลยุทธ์ {name.upper()} (รอบ {interval_min} นาที)")
+                    self.queue_manager.add_task(name)
+                    
+        self.scheduler = BotScheduler(check_and_enqueue)
+        self.scheduler.start()
+
+    def trigger_manual_strategy(self, strategy_name):
+        logging.info(f"⚡ [Manual] สั่งประมวลผลกลยุทธ์ {strategy_name.upper()} ทันที...")
+        self.queue_manager.add_task(strategy_name)
+
+    def run_strategy_cycle_safe(self, strategy_name):
+        """
+        ทำงานแยกกลยุทธ์ เรียงคิวกันตามลำดับจากคิวส่วนกลาง
+        """
+        self.is_running_strategy = True
+        try:
+            # ซิงค์ข้อมูลล่าสุดจาก UI
+            self.save_config_silent()
+            mode = self.var_mode.get()
+            
+            if mode == "Simulation":
+                bot_sim.run_strategy_cycle(strategy_name)
+            else:
+                bot_mt5.run_strategy_cycle(strategy_name)
+        except Exception as e:
+            logging.error(f"การรันกลยุทธ์ {strategy_name} เกิดข้อผิดพลาด: {e}")
+        finally:
+            self.is_running_strategy = False
+
+    def save_config_silent(self):
+        try:
+            cfg = {
+                "mode": self.var_mode.get(),
+                "api_key": self.ent_api_key.get(),
+                "auto_pilot": self.var_auto_pilot.get(),
+                "analysis_model": self.var_analysis_model.get(),
+                "management_model": self.var_management_model.get(),
+                "mt5_login": self.ent_mt5_login.get(),
+                "mt5_pass": self.ent_mt5_pass.get(),
+                "mt5_server": self.ent_mt5_server.get()
+            }
+            for name, s_dict in self.strat_vars.items():
+                cfg[name] = {
+                    "enabled": s_dict["enabled"].get(),
+                    "magic": int(s_dict["magic"].get() or 0),
+                    "max_lot": float(s_dict["max_lot"].get() or 0.01),
+                    "interval": int(s_dict["interval"].get() or 5),
+                    "trailing_enabled": s_dict["trailing_enabled"].get(),
+                    "trailing_atr_tf": s_dict["trailing_atr_tf"].get(),
+                    "trailing_activation_mult": float(s_dict["trailing_activation_mult"].get() or 1.5),
+                    "trailing_distance_mult": float(s_dict["trailing_distance_mult"].get() or 1.5),
+                    "trailing_step_mult": float(s_dict["trailing_step_mult"].get() or 0.3)
+                }
+            with open("gui_config.json", "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4, ensure_ascii=False)
+            self.apply_config_to_bots(cfg)
+        except Exception:
+            pass
+
     def update_portfolio_loop(self):
-        # ทำงานแบบ Non-blocking แยกเธรดเพื่อไม่ให้ UI กระตุกขณะดึงราคา
         def do_update():
             mode = self.var_mode.get()
             try:
+                # แมพป้ายชื่อเพื่อแสดงผลกลยุทธ์ให้ถูกต้อง
+                magic_map = {}
+                for name, s_dict in self.strat_vars.items():
+                    try:
+                        magic_map[int(s_dict["magic"].get())] = name.upper()
+                    except ValueError:
+                        pass
+                
                 if mode == "Simulation":
                     is_gold_open = bot_sim.is_gold_market_open()
-                    if is_gold_open:
-                        bot_sim.symbol = "XAUUSD"
-                        bot_sim.data_feed.symbol = "GC=F"
-                        bot_sim.data_feed.url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-                        bot_sim.exchange.contract_size = 100.0
-                    else:
-                        bot_sim.symbol = "BTCUSD"
-                        bot_sim.data_feed.symbol = "BTC-USD"
-                        bot_sim.data_feed.url = "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD"
-                        bot_sim.exchange.contract_size = 1.0
-                        
-                    current_price = bot_sim.data_feed.get_current_price() or 0.0
-                    bot_sim.exchange.update_price(current_price)
+                    bot_sim.symbol = "XAUUSD" if is_gold_open else "BTCUSD"
+                    
+                    price = bot_sim.data_feed.get_current_price() or 0.0
+                    bot_sim.exchange.update_price(price)
+                    
+                    # ในโหมดจำลอง ดึงประวัติทั้งหมดเพื่อแสดง
                     status = bot_sim.exchange.get_status()
                     
-                    # บัญชีจำลอง
                     bal = status["balance"]
                     eq = status["equity"]
                     pnl = status["floating_pnl"]
@@ -590,12 +745,21 @@ class TradingBotGUI:
                     open_pos = status["open_positions"]
                     history = status.get("history", [])
                     
-                    self.root.after(0, lambda: self.refresh_metrics(bal, eq, pnl, current_price, symbol))
-                    self.root.after(0, lambda: self.refresh_positions_tree(open_pos))
-                    self.root.after(0, lambda: self.refresh_history_tree(history))
+                    # คำนวณ Performance สถิติรายตัว
+                    for name in ["scalping", "daytrading", "swingtrading"]:
+                        try:
+                            mag = int(self.strat_vars[name]["magic"].get())
+                            strat_hist = [t for t in history if t.get("magic") == mag]
+                            metrics = PerformanceTracker.calculate_metrics(strat_hist)
+                            self.root.after(0, lambda n=name, m=metrics: self.refresh_performance_metrics(n, m))
+                        except Exception:
+                            pass
+                    
+                    self.root.after(0, lambda: self.refresh_metrics(bal, eq, pnl, price, symbol))
+                    self.root.after(0, lambda: self.refresh_positions_tree(open_pos, magic_map))
+                    self.root.after(0, lambda: self.refresh_history_tree(history, magic_map))
                     
                 else:
-                    # โหมดเชื่อมต่อ MT5
                     is_gold_open = bot_mt5.is_gold_market_open()
                     bot_mt5.symbol = "XAUUSD" if is_gold_open else "BTCUSD"
                     
@@ -603,8 +767,10 @@ class TradingBotGUI:
                     if connected:
                         price_info = bot_mt5.mt5_bridge.get_current_price(bot_mt5.symbol) or {"price": 0.0}
                         acc_status = bot_mt5.mt5_bridge.get_account_status() or {"balance": 0.0, "equity": 0.0, "floating_pnl": 0.0}
+                        
+                        # ใน GUI รวมประวัติพอร์ตทั้งหมดจาก MT5 แล้วเอามาฟิลเตอร์แสดงบน Performance
                         open_pos = bot_mt5.mt5_bridge.get_open_positions(bot_mt5.symbol)
-                        history = bot_mt5.mt5_bridge.get_trade_history(bot_mt5.symbol)
+                        history = bot_mt5.mt5_bridge.get_trade_history(bot_mt5.symbol, days=30)
                         
                         bal = acc_status["balance"]
                         eq = acc_status["equity"]
@@ -612,9 +778,19 @@ class TradingBotGUI:
                         price = price_info["price"]
                         symbol = bot_mt5.symbol
                         
+                        # คำนวณ Performance
+                        for name in ["scalping", "daytrading", "swingtrading"]:
+                            try:
+                                mag = int(self.strat_vars[name]["magic"].get())
+                                strat_hist = [t for t in history if t.get("magic") == mag]
+                                metrics = PerformanceTracker.calculate_metrics(strat_hist)
+                                self.root.after(0, lambda n=name, m=metrics: self.refresh_performance_metrics(n, m))
+                            except Exception:
+                                pass
+                                
                         self.root.after(0, lambda: self.refresh_metrics(bal, eq, pnl, price, symbol))
-                        self.root.after(0, lambda: self.refresh_positions_tree(open_pos))
-                        self.root.after(0, lambda: self.refresh_history_tree(history))
+                        self.root.after(0, lambda: self.refresh_positions_tree(open_pos, magic_map))
+                        self.root.after(0, lambda: self.refresh_history_tree(history, magic_map))
                     else:
                         self.root.after(0, self.refresh_offline)
             except Exception as e:
@@ -622,7 +798,6 @@ class TradingBotGUI:
                 
         t = threading.Thread(target=do_update, daemon=True)
         t.start()
-        # รันรอบหน้าในอีก 3 วินาที
         self.root.after(3000, self.update_portfolio_loop)
 
     def refresh_metrics(self, balance, equity, pnl, price, symbol):
@@ -641,12 +816,15 @@ class TradingBotGUI:
         self.card_pnl.lbl_val.config(text="$0.00", fg="#94a3b8")
         self.card_price.lbl_val.config(text="MT5 Terminal Disconnected", fg="#ef4444")
         
-    def refresh_positions_tree(self, open_pos):
-        # ล้างข้อมูลเดิมและเติมรายการปัจจุบัน
+    def refresh_positions_tree(self, open_pos, magic_map):
         self.tree_positions.delete(*self.tree_positions.get_children())
         for pos in open_pos:
+            magic = pos.get("magic", 0)
+            strat_label = magic_map.get(magic, f"MANUAL / OTHER ({magic})")
+            
             self.tree_positions.insert("", "end", values=(
                 pos["id"],
+                strat_label,
                 pos["direction"],
                 f"{pos['lot']:.2f}",
                 f"{pos['entry_price']:.2f}",
@@ -655,12 +833,15 @@ class TradingBotGUI:
                 f"${pos['pnl']:.2f}"
             ))
             
-    def refresh_history_tree(self, history):
-        # ล้างข้อมูลเดิมและเติมรายการปิดแล้ว
+    def refresh_history_tree(self, history, magic_map):
         self.tree_history.delete(*self.tree_history.get_children())
-        for item in history[:50]: # แสดงรายการล่าสุด 50 ไม้พอเพื่อประสิทธิภาพ
+        for item in history[:50]:
+            magic = item.get("magic", 0)
+            strat_label = magic_map.get(magic, f"MANUAL / OTHER ({magic})")
+            
             self.tree_history.insert("", "end", values=(
                 item["id"],
+                strat_label,
                 item["direction"],
                 f"{item['lot']:.2f}",
                 f"{item['entry_price']:.2f}",
@@ -671,6 +852,19 @@ class TradingBotGUI:
                 item.get("close_reason", "MARKET")
             ))
 
+    def refresh_performance_metrics(self, strat_name, metrics):
+        # อัปเดต Label สถิติของกลยุทธ์ที่ตรงตัว
+        for key, value in metrics.items():
+            if key in self.perf_labels:
+                lbl = self.perf_labels[key].get(strat_name)
+                if lbl:
+                    if key == "win_rate":
+                        lbl.config(text=f"{value}%")
+                    elif key == "max_drawdown_usd" or key == "expectancy":
+                        lbl.config(text=f"${value:,.2f}")
+                    else:
+                        lbl.config(text=str(value))
+
     def close_selected_position(self):
         selected = self.tree_positions.selection()
         if not selected:
@@ -680,10 +874,10 @@ class TradingBotGUI:
         values = self.tree_positions.item(selected[0])['values']
         ticket_id = values[0]
         
-        if messagebox.askyesno("ยืนยันการยกเลิก", f"คุณต้องการส่งคำสั่งปิดออเดอร์ Ticket #{ticket_id} ทันทีหรือไม่?"):
+        if messagebox.askyesno("ยืนยันการปิดออเดอร์", f"คุณต้องการปิดออเดอร์ Ticket #{ticket_id} ทันทีหรือไม่?"):
             def do_close():
                 mode = self.var_mode.get()
-                logging.info(f"🛑 สั่ง CLOSE ออเดอร์ #{ticket_id} ผ่านหน้า Desktop GUI...")
+                logging.info(f"🛑 สั่ง CLOSE ออเดอร์ #{ticket_id}...")
                 try:
                     if mode == "Simulation":
                         res = bot_sim.exchange.close_position(str(ticket_id))
@@ -692,11 +886,8 @@ class TradingBotGUI:
                         
                     if res.get("status") == "SUCCESS":
                         logging.info(f"ปิดออเดอร์ #{ticket_id} สำเร็จ!")
-                        self.root.after(0, lambda: messagebox.showinfo("สำเร็จ", f"ปิดออเดอร์ #{ticket_id} สำเร็จ!"))
                     else:
-                        err = res.get('message', 'Unknown Error')
-                        logging.error(f"ปิดออเดอร์ #{ticket_id} ล้มเหลว: {err}")
-                        self.root.after(0, lambda: messagebox.showerror("ล้มเหลว", f"ไม่สามารถปิดออเดอร์ได้: {err}"))
+                        logging.error(f"ปิดออเดอร์ #{ticket_id} ล้มเหลว: {res.get('message')}")
                 except Exception as e:
                     logging.error(f"ระบบปิดออเดอร์ขัดข้อง: {e}")
                     
@@ -704,10 +895,9 @@ class TradingBotGUI:
             t.start()
 
 # ----------------------------------------------------
-# 📌 8. ฟังก์ชันเริ่มรัน GUI Dashboard
+# 📌 6. ฟังก์ชันเริ่มรัน GUI Dashboard
 # ----------------------------------------------------
 if __name__ == "__main__":
-    # บังคับใช้ระบบ DPI-awareness บน Windows เพื่อความชัดของหน้าจอคอมพิวเตอร์
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
@@ -716,12 +906,14 @@ if __name__ == "__main__":
         
     root = tk.Tk()
     
-    # กำหนดสไตล์ ttk เพิ่มความโมเดิร์น
     style = ttk.Style()
     style.theme_use("clam")
     
-    # แต่งสีหัวตารางและกล่องเลือก
     style.configure("TCombobox", fieldbackground="#0f172a", background="#1e293b", foreground="#f8fafc", relief="flat")
+    style.configure("TNotebook", background="#1e293b", borderwidth=0)
+    style.configure("TNotebook.Tab", background="#0f172a", foreground="#94a3b8", borderwidth=0, padding=[10, 4])
+    style.map("TNotebook.Tab", background=[('selected', '#1e293b')], foreground=[('selected', '#f8fafc')])
+    
     style.configure("Treeview", background="#1e293b", fieldbackground="#1e293b", foreground="#f8fafc", rowheight=26, font=("Outfit", 9))
     style.map("Treeview", background=[('selected', '#818cf8')], foreground=[('selected', '#0f172a')])
     style.configure("Treeview.Heading", background="#0f172a", foreground="#94a3b8", borderwidth=0, font=("Outfit", 9, "bold"))

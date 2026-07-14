@@ -4,395 +4,298 @@ import logging
 from datetime import datetime, timezone
 from mt5_integration import MT5Integration
 from trading_agents import TradingAgents
-from data_feed import GoldDataFeed
+from performance_tracker import PerformanceTracker
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MT5TradingBotOrchestrator:
     """
-    ตัวควบคุมการเทรดจริงบน MT5 (MetaTrader 5 Live Bot Orchestrator)
-    ดึงราคาและแท่งเทียนจริงจาก MT5 -> ส่งวิเคราะห์ผ่าน Agent -> ส่งคำสั่งเทรดเข้าโบรกเกอร์จริง
+    ตัวควบคุมการเทรดจริงบน MT5 แบบแยกกลยุทธ์ (Multi-Strategy MetaTrader 5 Live Bot Orchestrator)
     """
     def __init__(self, api_key, login=None, password=None, server=None):
-        # 1. โหลดโมดูลเชื่อมต่อ MT5
         self.mt5_bridge = MT5Integration(login=login, password=password, server=server)
-        # 2. โหลดโมดูล Agent
         self.agents = TradingAgents(api_key=api_key)
-        # 3. โหลดโมดูลประมวลผลข้อมูลราคาเพื่อคำนวณอินดิเคเตอร์เชิงเทคนิค
-        self.data_feed = GoldDataFeed()
         self.symbol = "XAUUSD"
-        # 4. ค่าตั้งค่า Trailing Stop และระบบประหยัด Token
-        self.trailing_activation_mult = 1.5
-        self.trailing_distance_mult = 1.5
-        self.trailing_step_mult = 0.3
-        self.trailing_atr_tf = "5m"
-        self.hold_minutes = 5
-        self.next_run_time = 0
+        
+        # โครงสร้างสำหรับเก็บคอนฟิกแยกรายกลยุทธ์
+        self.strategies = {
+            "scalping": {
+                "magic": 111111,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": True,
+                "trailing_atr_tf": "5m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
+            },
+            "daytrading": {
+                "magic": 222222,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": True,
+                "trailing_atr_tf": "15m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
+            },
+            "swingtrading": {
+                "magic": 333333,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": False,
+                "trailing_atr_tf": "1h",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
+            }
+        }
 
     def send_discord_message(self, message):
         """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
         import requests
         webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
         if not webhook_url:
-            logging.warning("ไม่พบการกำหนดค่า DISCORD_WEBHOOK_URL ใน Environment Variables ระบบจะงดส่งแจ้งเตือนทาง Discord")
             return
         try:
             payload = {"content": message}
-            response = requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-            response.raise_for_status()
+            requests.post(webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
         except Exception as e:
             logging.error(f"ไม่สามารถส่งการแจ้งเตือนไปยัง Discord ได้: {e}")
 
     def is_gold_market_open(self):
-        """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดเสาร์-อาทิตย์หรือไม่ (อิงเวลา UTC)"""
+        """ตรวจสอบว่าตลาดทองคำปิดทำการช่วงวันหยุดหรือไม่ (อิงเวลา UTC)"""
         now_utc = datetime.now(timezone.utc)
-        day = now_utc.weekday()  # 0 = Monday, ..., 6 = Sunday
+        day = now_utc.weekday()
         hour = now_utc.hour
         
-        # ปิดวันเสาร์ (5) และวันอาทิตย์ (6) ทั้งวัน
         if day in [5, 6]:
             return False
-        # ปิดวันศุกร์ (4) หลัง 21:00 UTC (ประมาณตี 4 วันเสาร์เวลาไทย)
         if day == 4 and hour >= 21:
             return False
-        # ปิดวันจันทร์ (0) ก่อน 00:00 UTC
         if day == 0 and hour < 0:
             return False
         return True
-        
-    def _prepare_market_summary(self, df_5m, df_15m, df_1h, current_price):
-        """แปลงข้อมูลราคาและอินดิเคเตอร์จาก 3 กรอบเวลา (5m, 15m, 1h) ให้เป็นข้อความสรุปเชิงเทคนิคสำหรับ AI"""
-        import pandas as pd
-        
-        summary = f"=== ข้อมูลราคาและอินดิเคเตอร์ Multi-Timeframe สำหรับ {self.symbol} ===\n"
-        summary += f"ราคาตลาดล่าสุดจากโบรกเกอร์: {current_price:.2f} USD\n\n"
-        
-        # 1. วิเคราะห์ กรอบเวลาใหญ่ (HTF) - 1h
-        summary += "1. [กรอบเวลา 1 ชั่วโมง - เทรนด์หลักและแนวรับแนวต้านสำคัญ]\n"
-        if not df_1h.empty:
-            last_row_1h = df_1h.iloc[-1]
-            summary += f"- ราคาปิดแท่งล่าสุด (1h): {last_row_1h['close']:.2f}\n"
-            if len(df_1h) >= 30:
-                df_sma10 = df_1h['close'].rolling(10).mean()
-                df_sma30 = df_1h['close'].rolling(30).mean()
-                last_sma10 = df_sma10.iloc[-1]
-                last_sma30 = df_sma30.iloc[-1]
-                trend_1h = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-                summary += f"- เทรนด์หลัก (1h): {trend_1h} | SMA10: {last_sma10:.2f} | SMA30: {last_sma30:.2f}\n"
-            
-            # หาจุดสูงสุด/ต่ำสุดใน 20 แท่งล่าสุดเพื่อวิเคราะห์แนวรับแนวต้าน
-            if len(df_1h) >= 20:
-                recent_20 = df_1h.tail(20)
-                highest_20 = recent_20['high'].max()
-                lowest_20 = recent_20['low'].min()
-                summary += f"- แนวต้านสำคัญช่วงนี้ (High 20h): {highest_20:.2f}\n"
-                summary += f"- แนวรับสำคัญช่วงนี้ (Low 20h): {lowest_20:.2f}\n"
-        else:
-            summary += "- (ไม่สามารถดึงข้อมูล 1h ได้)\n"
-            
-        summary += "\n"
-        
-        # 2. วิเคราะห์ กรอบเวลากลาง (ITF) - 15m
-        summary += "2. [กรอบเวลา 15 นาที - โครงสร้างราคาและระยะปลอดภัย]\n"
-        if not df_15m.empty:
-            last_row_15m = df_15m.iloc[-1]
-            summary += f"- ราคาปิดแท่งล่าสุด (15m): {last_row_15m['close']:.2f}\n"
-            if len(df_15m) >= 30:
-                df_sma10 = df_15m['close'].rolling(10).mean()
-                df_sma30 = df_15m['close'].rolling(30).mean()
-                last_sma10 = df_sma10.iloc[-1]
-                last_sma30 = df_sma30.iloc[-1]
-                trend_15m = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-                summary += f"- เทรนด์รอง (15m): {trend_15m} | SMA10: {last_sma10:.2f} | SMA30: {last_sma30:.2f}\n"
-                
-            # คำนวณ ATR เพื่อใช้วัดความผันผวนหาระยะ Stop Loss
-            if len(df_15m) >= 14:
-                high_low = df_15m['high'] - df_15m['low']
-                high_cp = (df_15m['high'] - df_15m['close'].shift()).abs()
-                low_cp = (df_15m['low'] - df_15m['close'].shift()).abs()
-                tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-                atr = tr.rolling(14).mean().iloc[-1]
-                summary += f"- ค่าความผันผวน ATR (14): {atr:.2f} (แนะนำตั้ง SL ห่างอย่างน้อย 1.5 - 2 เท่าของ ATR)\n"
-                
-            # แสดงประวัติราคา 3 แท่งล่าสุด
-            summary += "- ประวัติราคา 3 แท่งล่าสุด (15m):\n"
-            for idx, row in df_15m.tail(3).iterrows():
-                summary += f"  * เวลา {row['timestamp']}: Open {row['open']:.2f} | Close {row['close']:.2f} | Vol: {row['volume']}\n"
-        else:
-            summary += "- (ไม่สามารถดึงข้อมูล 15m ได้)\n"
-            
-        summary += "\n"
-        
-        # 3. วิเคราะห์ กรอบเวลาเล็ก (LTF) - 5m
-        summary += "3. [กรอบเวลา 5 นาที - สัญญาณจุดเข้าซื้อขายปัจจุบัน]\n"
-        if not df_5m.empty:
-            last_row_5m = df_5m.iloc[-1]
-            summary += f"- ราคาปิดแท่งล่าสุด (5m): {last_row_5m['close']:.2f}\n"
-            if len(df_5m) >= 30:
-                df_sma10 = df_5m['close'].rolling(10).mean()
-                df_sma30 = df_5m['close'].rolling(30).mean()
-                last_sma10 = df_sma10.iloc[-1]
-                last_sma30 = df_sma30.iloc[-1]
-                trend_5m = "ขาขึ้น (SMA10 > SMA30)" if last_sma10 > last_sma30 else "ขาลง (SMA10 < SMA30)"
-                summary += f"- โมเมนตัมระยะสั้น (5m): {trend_5m}\n"
-                
-            # แสดงประวัติราคา 3 แท่งล่าสุด
-            summary += "- ประวัติราคา 3 แท่งล่าสุด (5m):\n"
-            for idx, row in df_5m.tail(3).iterrows():
-                summary += f"  * เวลา {row['timestamp']}: Open {row['open']:.2f} | Close {row['close']:.2f} | Vol: {row['volume']}\n"
-        else:
-            summary += "- (ไม่สามารถดึงข้อมูล 5m ได้)\n"
-            
-        return summary
 
     def run_cycle(self):
         """
-        รันวงจรการตัดสินใจซื้อขายจริง 1 รอบ
+        รันทุกกลยุทธ์ย่อยทีละตัวตามลำดับ (หากไม่มีคิวภายนอกควบคุม)
         """
-        logging.info("=== เริ่มต้นรอบการทำงานจริงบน MT5 (New Live Cycle) ===")
+        for strat_name in ["scalping", "daytrading", "swingtrading"]:
+            if self.strategies[strat_name]["enabled"]:
+                self.run_strategy_cycle(strat_name)
+
+    def run_strategy_cycle(self, strategy_name):
+        """
+        รันวงจรการเทรดเฉพาะของแต่ละกลยุทธ์บน MT5 พอร์ตจริง
+        """
+        if strategy_name not in self.strategies:
+            logging.error(f"ไม่พบข้อมูลกลยุทธ์ {strategy_name}")
+            return
+            
+        strat = self.strategies[strategy_name]
+        if not strat.get("enabled", True):
+            logging.info(f"🚫 Live กลยุทธ์ {strategy_name} ถูกปิดใช้งาน ข้ามรอบ")
+            return
+            
+        magic_number = int(strat.get("magic", 123456))
         
-        # 1. ตรวจสอบสถานะตลาดทองคำ (XAUUSD)
+        logging.info(f"⏰ Live === เริ่มรอบการทำงานของกลยุทธ์: {strategy_name.upper()} (Magic: {magic_number}) ===")
+        
+        # 1. ตรวจสอบสถานะตลาดทองคำ
         if self.is_gold_market_open():
             self.symbol = "XAUUSD"
-            logging.info("ตลาดทองคำเปิดทำการ เลือกเทรดสินทรัพย์หลัก: XAUUSD")
         else:
-            self.symbol = "BTCUSD"  # หรือ "BTCUSDT" ตามที่ Broker รองรับ
-            logging.info("ตลาดทองคำปิดทำการ (ช่วงวันหยุดเสาร์-อาทิตย์) สลับมาเทรดสินทรัพย์สำรอง: BTCUSD (Bitcoin)")
+            self.symbol = "BTCUSD"
             
         # 2. เชื่อมต่อ MT5
         if not self.mt5_bridge.connect():
             logging.error("ไม่สามารถเชื่อมต่อโปรแกรม MT5 Terminal ได้ ข้ามรอบนี้")
             return
             
-        # 3. ดึงราคาและข้อมูลบัญชีล่าสุด
+        # 3. ดึงราคาและพอร์ตล่าสุด
         price_info = self.mt5_bridge.get_current_price(self.symbol)
         acc_status = self.mt5_bridge.get_account_status()
         
         if not price_info or not acc_status:
-            logging.error("ดึงข้อมูลราคาหรือข้อมูลพอร์ตจาก MT5 ล้มเหลว")
+            logging.error("ดึงข้อมูลราคาหรือข้อมูลพอร์ตจาก MT5 ล้มเหลว ข้ามรอบ")
             return
             
         current_price = price_info["price"]
+        spread = price_info.get("spread", 0.0)
         balance = acc_status["balance"]
         equity = acc_status["equity"]
         
-        logging.info(f"บัญชีเงินจริง: Balance ${balance:.2f} | Equity ${equity:.2f} | ราคา {self.symbol} ล่าสุด: {current_price} USD")
+        # ดึงสถานะคัดกรองตาม Magic Number
+        open_positions = self.mt5_bridge.get_open_positions(self.symbol, magic=magic_number)
         
-        # 4. ดึงรายการออเดอร์ที่ค้างอยู่ (ทั้งเทรดจริงค้าง และคำสั่งล่วงหน้าที่ยังไม่จับคู่)
-        open_positions = self.mt5_bridge.get_open_positions(self.symbol)
-        pending_orders = self.mt5_bridge.get_pending_orders(self.symbol)
-        
-        # หากไม่มีออเดอร์ค้าง และยังไม่พ้นระยะ Hold ให้ข้ามรอบทำงาน (เพื่อประหยัด Token)
-        if not open_positions and not pending_orders:
-            now = time.time()
-            if now < getattr(self, 'next_run_time', 0):
-                remaining_sec = self.next_run_time - now
-                logging.info(f"⏳ [MT5 Hold Active] สภาพตลาดปัจจุบันอยู่ในช่วงพักวิเคราะห์ (Hold) เพื่อประหยัด Token เหลืออีก {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
-                return
+        # 4. จัดการ ATR Trailing Stop สำหรับออเดอร์เปิดอยู่
+        if open_positions:
+            if strat.get("trailing_enabled", True):
+                logging.info(f"⚡ Live กลยุทธ์ {strategy_name}: พบออเดอร์ค้าง {len(open_positions)} ไม้ -> รัน ATR Trailing Stop (0 Tokens)")
                 
-        if not open_positions and not pending_orders:
-            # ----------------------------------------------------
-            # 📌 สาขา A: พอร์ตว่างสนิท -> วิเคราะห์หาจุดเปิดออเดอร์ใหม่ (Market หรือ Pending)
-            # ----------------------------------------------------
-            logging.info(f"พอร์ตว่างสนิท ไม่มีออเดอร์และคำสั่งล่วงหน้า ดึงกราฟย้อนหลัง {self.symbol} แบบ Multi-Timeframe (5m, 15m, 1h)...")
-            
-            # ดึงแท่งเทียนย้อนหลัง 3 กรอบเวลา
-            df_5m = self.mt5_bridge.get_historical_data(self.symbol, timeframe="5m", num_candles=100)
-            df_15m = self.mt5_bridge.get_historical_data(self.symbol, timeframe="15m", num_candles=100)
-            df_1h = self.mt5_bridge.get_historical_data(self.symbol, timeframe="1h", num_candles=100)
-            
-            # ดึงค่า spread ล่าสุดจากราคาที่โบรกเกอร์ส่งมา
-            spread = price_info.get("spread", 0.0)
-            
-            # ส่งข้อมูลให้ AI วิเคราะห์การเทรดด้วยระบบ Multi-Agent M5 Price Action
-            decision = self.agents.analyze_market(
-                df_5m=df_5m,
-                df_15m=df_15m,
-                df_1h=df_1h,
-                balance=balance,
-                symbol=self.symbol,
-                leverage=100.0,
-                spread=spread
-            )
-            
-            if not decision:
-                logging.error("ไม่ได้รับข้อมูลวิเคราะห์จาก AI")
-                return
+                tf = strat.get("trailing_atr_tf", "5m")
+                df_hist = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe=tf, num_candles=100)
                 
-            action = decision.get("action")
-            reason = decision.get("reasoning")
-            logging.info(f"การประเมินจาก AI: {action} | เหตุผล: {reason}")
-            
-            if action in ["BUY", "SELL"]:
-                lot = decision.get("lot", 0.01)
-                sl = decision.get("sl")
-                tp = decision.get("tp")
-                entry = decision.get("entry")
-                
-                # Double Verification (กฎเหล็กความปลอดภัยตรวจสอบขนาดล็อต)
-                max_allowed_lot = getattr(self, 'max_lot', 0.01)
-                if lot > max_allowed_lot:
-                    logging.warning(f"เตือน: ขนาดล็อตที่ขอมา ({lot}) เกินเพดานสูงสุดที่จำกัดไว้ ({max_allowed_lot}) ปรับล็อตเหลือ {max_allowed_lot}")
-                    lot = max_allowed_lot
-                elif balance < 100.0 and lot > 0.01:
-                    logging.warning(f"เตือน: ขนาดล็อตใหญ่เกินไปสำหรับทุนจริง ปรับลดลงเหลือ 0.01 (เดิมขอ {lot})")
-                    lot = 0.01
-                    
-                logging.info(f"กำลังส่งคำสั่งเทรด: {action} ขนาด {lot} Lot (เป้าหมายราคาเข้า: {entry})...")
-                res = self.mt5_bridge.open_position(direction=action, lot=lot, sl=sl, tp=tp, entry=entry, symbol=self.symbol)
-                logging.info(f"ผลการทำรายการบนโบรกเกอร์: {res}")
-                
-                # ส่งแจ้งเตือน Discord
-                status_text = "ยิงออเดอร์สำเร็จ" if res.get("status") == "SUCCESS" else f"ล้มเหลว ({res.get('message', '')})"
-                msg = (
-                    f"🟢 **[MT5 Live - New Position]**\n"
-                    f"**Asset:** {self.symbol} | **Action:** {action}\n"
-                    f"**Lot Size:** {lot:.2f} | **Target Entry:** {entry or 'Market'}\n"
-                    f"**Current Price:** {current_price:.2f} USD\n"
-                    f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
-                    f"**Broker Result:** {status_text}\n"
-                    f"**Reason:** {reason}"
-                )
-                self.send_discord_message(msg)
-            else:
-                # บันทึกเวลาที่จะต้องพักวิเคราะห์ (Hold) เพื่อประหยัด Token
-                hold_min = int(decision.get("hold_minutes") or 5)
-                if hold_min not in [5, 10, 15, 30]:
-                    hold_min = 5
-                self.hold_minutes = hold_min
-                self.next_run_time = time.time() + (hold_min * 60)
-                
-                logging.info(f"AI ประเมินว่ายังไม่ควรกระทำการใดๆ ให้รอดูสัญญาณต่อไป (HOLD) | พักวิเคราะห์ชั่วคราว {hold_min} นาที (จะวิเคราะห์ใหม่ตอน: {datetime.fromtimestamp(self.next_run_time).strftime('%H:%M:%S')})")
-                # ส่งแจ้งเตือน Discord สำหรับ HOLD
-                msg = (
-                    f"🟡 **[MT5 Live - Analyst Alert]**\n"
-                    f"**Asset:** {self.symbol} | **Action:** HOLD (รอดูสัญญาณ)\n"
-                    f"**Hold Duration:** พักวิเคราะห์ {hold_min} นาที\n"
-                    f"**Reason:** {reason}"
-                )
-                self.send_discord_message(msg)
-                
-        elif pending_orders and not open_positions:
-            # ----------------------------------------------------
-            # 📌 สาขา B1: มีคำสั่ง Pending Order ค้างอยู่ (ยังไม่จับคู่) -> ส่งให้ AI จัดการ/ยกเลิก
-            # ----------------------------------------------------
-            logging.info(f"มีคำสั่งล่วงหน้า (Pending Order) รอค้างในระบบ {len(pending_orders)} ไม้")
-            
-            for ord in pending_orders:
-                order_ticket = ord['id']
-                
-                # จำลองโครงสร้างเพื่อให้ AI ตัวคุมความเสี่ยงเข้าใจได้ (เนื่องจากยังไม่มี P&L เกิดขึ้นจริง)
-                ord['pnl'] = 0.0
-                ord['entry_price'] = ord['entry_price']  # ราคาเป้าหมายที่รอเข้า
-                
-                decision = self.agents.manage_position(
-                    position_details=ord,
-                    current_price=current_price,
-                    balance=balance,
-                    symbol=self.symbol
-                )
-                
-                if not decision:
-                    logging.error(f"ไม่ได้รับแผนจัดการคำสั่งล่วงหน้า {order_ticket} จาก AI")
-                    continue
-                    
-                action = decision.get("action")
-                reason = decision.get("reasoning")
-                logging.info(f"การจัดการของ AI สำหรับคำสั่งล่วงหน้า {order_ticket}: {action} | เหตุผล: {reason}")
-                
-                if action == "CLOSE":
-                    logging.info(f"กำลังยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {order_ticket}...")
-                    self.mt5_bridge.cancel_pending_order(order_ticket)
-                    msg = (
-                        f"❌ **[MT5 Live - Cancel Pending]**\n"
-                        f"**Order ID:** #{order_ticket} | **Asset:** {self.symbol}\n"
-                        f"**Action:** CANCEL PENDING ORDER\n"
-                        f"**Reason:** {reason}"
-                    )
-                    self.send_discord_message(msg)
+                if not df_hist.empty:
+                    # คำนวณ ATR 14
+                    import pandas as pd
+                    high_low = df_hist['high'] - df_hist['low']
+                    high_cp = (df_hist['high'] - df_hist['close'].shift()).abs()
+                    low_cp = (df_hist['low'] - df_hist['close'].shift()).abs()
+                    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+                    atr = tr.rolling(14).mean().iloc[-1]
                 else:
-                    logging.info(f"คงคำสั่งล่วงหน้า Ticket {order_ticket} ไว้ตามเดิม (HOLD)")
+                    atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
                     
-        else:
-            # ----------------------------------------------------
-            # 📌 สาขา B2: มีออเดอร์ค้างอยู่ -> จัดการ ATR Trailing Stop (Python เท่านั้น ไม่พึ่ง Agent เพื่อประหยัด Token)
-            # ----------------------------------------------------
-            logging.info(f"มีออเดอร์ค้างอยู่ (Active Position) ทั้งหมด {len(open_positions)} ไม้")
-            
-            # ดึงประวัติย้อนหลังตามกรอบเวลาที่ตั้งค่าเพื่อคำนวณ ATR ปัจจุบัน
-            tf = getattr(self, 'trailing_atr_tf', '5m')
-            df_hist = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe=tf, num_candles=100)
-            df_hist_anal = self.data_feed.analyze_price_action(df_hist)
-            
-            if not df_hist_anal.empty and 'atr_14' in df_hist_anal.columns:
-                atr = float(df_hist_anal['atr_14'].iloc[-1])
-            else:
-                atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
+                activation_dist = atr * float(strat.get("trailing_activation_mult", 1.5))
+                trail_dist = atr * float(strat.get("trailing_distance_mult", 1.5))
+                trail_step = atr * float(strat.get("trailing_step_mult", 0.3))
                 
-            activation_dist = atr * getattr(self, 'trailing_activation_mult', 1.5)
-            trail_dist = atr * getattr(self, 'trailing_distance_mult', 1.5)
-            trail_step = atr * getattr(self, 'trailing_step_mult', 0.3)
-            
-            logging.info(f"📊 [MT5 ATR Trailing Config] ATR: {atr:.2f} | Activation: {activation_dist:.2f} | Trail Dist: {trail_dist:.2f} | Trail Step: {trail_step:.2f}")
-            
-            for pos in open_positions:
-                ticket_id = pos['id']
-                direction = pos['direction']
-                entry_price = float(pos['entry_price'])
-                current_sl = pos['sl']
-                
-                trail_updated = False
-                new_sl = None
-                
-                if direction == 'BUY':
-                    # ถ้าราคาปัจจุบันวิ่งทำกำไรเกิน activation_dist
-                    if current_price - entry_price >= activation_dist:
-                        target_sl = current_price - trail_dist
-                        # ขยับ SL หากไม่มี SL อยู่ก่อน หรือ SL ใหม่สูงกว่า SL เดิม
-                        if current_sl is None or float(current_sl) == 0.0 or target_sl > float(current_sl):
-                            # ต้องมากกว่าเดิมอย่างน้อย trail_step
-                            if current_sl is None or float(current_sl) == 0.0 or (target_sl - float(current_sl)) >= trail_step:
-                                new_sl = target_sl
-                                trail_updated = True
-                elif direction == 'SELL':
-                    # ถ้าราคาปัจจุบันวิ่งทำกำไรเกิน activation_dist
-                    if entry_price - current_price >= activation_dist:
-                        target_sl = current_price + trail_dist
-                        # ขยับ SL หากไม่มี SL อยู่ก่อน หรือ SL ใหม่ต่ำกว่า SL เดิม
-                        if current_sl is None or float(current_sl) == 0.0 or target_sl < float(current_sl):
-                            # ต้องต่ำกว่าเดิมอย่างน้อย trail_step
-                            if current_sl is None or float(current_sl) == 0.0 or (float(current_sl) - target_sl) >= trail_step:
-                                new_sl = target_sl
-                                trail_updated = True
-                                
-                if trail_updated:
-                    res = self.mt5_bridge.modify_position(ticket_id, new_sl=new_sl)
-                    if res.get("status") == "SUCCESS":
-                        final_sl = res.get("final_sl", new_sl)
-                        logging.info(f"📈 [MT5 ATR Trailing Stop] เลื่อนจุด SL ของออเดอร์ #{ticket_id} สำเร็จไปที่ {final_sl} (ราคาตลาด {current_price:.2f})")
+                for pos in open_positions:
+                    pos_id = pos['id']
+                    direction = pos['direction']
+                    entry_price = float(pos['entry_price'])
+                    current_sl = pos['sl']
+                    
+                    trail_updated = False
+                    new_sl = None
+                    
+                    if direction == 'BUY':
+                        if current_price - entry_price >= activation_dist:
+                            target_sl = current_price - trail_dist
+                            if current_sl is None or current_sl == 0 or target_sl > float(current_sl):
+                                if current_sl is None or current_sl == 0 or (target_sl - float(current_sl)) >= trail_step:
+                                    new_sl = target_sl
+                                    trail_updated = True
+                    elif direction == 'SELL':
+                        if entry_price - current_price >= activation_dist:
+                            target_sl = current_price + trail_dist
+                            if current_sl is None or current_sl == 0 or target_sl < float(current_sl):
+                                if current_sl is None or current_sl == 0 or (float(current_sl) - target_sl) >= trail_step:
+                                    new_sl = target_sl
+                                    trail_updated = True
+                                    
+                    if trail_updated:
+                        import MetaTrader5 as mt5
+                        sym_info = mt5.symbol_info(self.mt5_bridge.resolve_symbol(self.symbol))
+                        if sym_info:
+                            new_sl = round(round(new_sl / sym_info.trade_tick_size) * sym_info.trade_tick_size, sym_info.digits)
+                            
+                        self.mt5_bridge.modify_sl_tp(pos_id, new_sl=new_sl)
+                        logging.info(f"📈 [Live ATR Trailing Stop] เลื่อน SL ออเดอร์ #{pos_id} ไปที่ {new_sl:.2f}")
                         msg = (
-                            f"📈 **[MT5 Live - ATR Trailing Stop Success]**\n"
-                            f"**Order ID:** #{ticket_id} | **Asset:** {self.symbol}\n"
-                            f"**Action:** Move SL -> {final_sl}\n"
+                            f"📈 **[MT5 Live - ATR Trailing Stop]**\n"
+                            f"**Order ID:** #{pos_id} | **Asset:** {self.symbol} | **Strategy:** {strategy_name.upper()}\n"
+                            f"**Action:** Move SL -> {new_sl:.2f}\n"
                             f"**Reason:** Price moved in favor with ATR-based activation ({activation_dist:.2f} USD)"
                         )
                         self.send_discord_message(msg)
-                        pos['sl'] = float(final_sl)
-                    else:
-                        logging.warning(f"❌ [MT5 ATR Trailing Stop] เลื่อนจุด SL ของออเดอร์ #{ticket_id} ล้มเหลว: {res.get('message')}")
-                else:
-                    logging.info(f"ถือครองออเดอร์ {ticket_id} ต่อไปตามเงื่อนไขเดิม (HOLD) - ยังไม่ถึงเกณฑ์ขยับ SL")
-                    
-        logging.info("=== จบรอบการทำงานจริงบน MT5 ===\n")
-
-if __name__ == "__main__":
-    # โหลดค่า API Key
-    api_key = os.environ.get("MAXPLUS_API_KEY")
-    if not api_key:
-        print("กรุณาตั้งค่า: export MAXPLUS_API_KEY='คีย์ของคุณ'")
-    else:
-        # กำหนดบัญชี MT5 (หากต้องการให้ล็อกอินอัตโนมัติ ให้กรอกข้อมูลด้านล่างนี้)
-        # ตัวอย่าง: bot = MT5TradingBotOrchestrator(api_key=api_key, login=123456, password="Password", server="Broker-Server")
-        # หากไม่ใส่พารามิเตอร์ บอทจะเชื่อมต่อเข้ากับโปรแกรม MT5 ที่คุณเปิดล็อกอินทิ้งไว้ในเครื่องคอมพิวเตอร์อัตโนมัติ
-        bot = MT5TradingBotOrchestrator(api_key=api_key)
-        bot.run_cycle()
+                        pos['sl'] = new_sl
+            else:
+                logging.info(f"Live: ถือออเดอร์ {len(open_positions)} ไม้ของกลยุทธ์ {strategy_name} ต่อไปโดยไม่มี Trailing Stop")
+            return
+            
+        # 5. ตรวจสอบระยะเวลาพักวิเคราะห์ (Hold) เพื่อประหยัด Token
+        now = time.time()
+        if now < strat.get("next_run_time", 0):
+            remaining_sec = strat["next_run_time"] - now
+            logging.info(f"⏳ Live [Hold Active] กลยุทธ์ {strategy_name}: อยู่ในช่วงพักวิเคราะห์ เหลือเวลา {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
+            return
+            
+        logging.info(f"Live กลยุทธ์ {strategy_name}: ไม่มีออเดอร์ค้าง รันระบบวิเคราะห์...")
+        
+        # 6. ดึงประวัติย้อนหลังและเตรียมข้อมูลสะท้อนตนเอง (Self-Reflection)
+        closed_trades = self.mt5_bridge.get_trade_history(symbol=self.symbol, days=15, magic=magic_number)
+        perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
+        
+        # 7. เรียกใช้กลยุทธ์ย่อยวิเคราะห์ตลาดผ่านโมเดล
+        decision = None
+        if strategy_name == "scalping":
+            df_1m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1m", num_candles=100)
+            df_5m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="5m", num_candles=100)
+            df_15m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="15m", num_candles=100)
+            df_30m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="30m", num_candles=100)
+            
+            regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol)
+            decision = self.agents.analyze_scalping(
+                df_1m=df_1m, df_5m=df_5m, df_15m=df_15m, df_30m=df_30m,
+                balance=balance, symbol=self.symbol,
+                leverage=100.0, spread=spread,
+                performance_stats=perf_stats, trade_history=closed_trades,
+                regime_report=regime
+            )
+            
+        elif strategy_name == "daytrading":
+            df_15m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="15m", num_candles=100)
+            df_1h = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1h", num_candles=100)
+            df_4h = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="4h", num_candles=100)
+            
+            regime = self.agents.analyze_market_regime(df_15m, df_1h, df_4h, symbol=self.symbol)
+            decision = self.agents.analyze_daytrading(
+                df_15m=df_15m, df_1h=df_1h, df_4h=df_4h,
+                balance=balance, symbol=self.symbol,
+                leverage=100.0, spread=spread,
+                performance_stats=perf_stats, trade_history=closed_trades,
+                regime_report=regime
+            )
+            
+        elif strategy_name == "swingtrading":
+            df_4h = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="4h", num_candles=100)
+            df_1d = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1d", num_candles=100)
+            df_1w = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1w", num_candles=100)
+            
+            regime = self.agents.analyze_market_regime(df_4h, df_1d, df_1w, symbol=self.symbol)
+            decision = self.agents.analyze_swingtrading(
+                df_4h=df_4h, df_1d=df_1d, df_1w=df_1w,
+                balance=balance, symbol=self.symbol,
+                leverage=100.0, spread=spread,
+                performance_stats=perf_stats, trade_history=closed_trades,
+                regime_report=regime
+            )
+            
+        if not decision:
+            logging.error(f"ไม่ได้รับผลการตัดสินใจของกลยุทธ์ {strategy_name} จาก Agent")
+            return
+            
+        action = decision.get("action")
+        reason = decision.get("reasoning")
+        logging.info(f"Live ผลลัพธ์กลยุทธ์ {strategy_name}: {action} | เหตุผล: {reason}")
+        
+        if action in ["BUY", "SELL"]:
+            lot = decision.get("lot", 0.01)
+            sl = decision.get("sl")
+            tp = decision.get("tp")
+            
+            max_allowed_lot = float(strat.get("max_lot", 0.01))
+            if lot > max_allowed_lot:
+                lot = max_allowed_lot
+                
+            res = self.mt5_bridge.open_position(direction=action, lot=lot, sl=sl, tp=tp, magic=magic_number, symbol=self.symbol)
+            
+            if res.get("status") == "SUCCESS":
+                strat["next_run_time"] = 0
+                msg = (
+                    f"🟢 **[MT5 Live - New Position]**\n"
+                    f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                    f"**Action:** {action} | **Lot Size:** {lot:.2f}\n"
+                    f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
+                    f"**Reason:** {reason}"
+                )
+                self.send_discord_message(msg)
+        else:
+            hold_min = int(decision.get("hold_minutes") or 5)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            logging.info(f"Live พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
+            msg = (
+                f"🟡 **[MT5 Live - Strategy Alert]**\n"
+                f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                f"**Action:** HOLD | **Hold Duration:** พัก {hold_min} นาที\n"
+                f"**Reason:** {reason}"
+            )
+            self.send_discord_message(msg)
+            
+        logging.info(f"=== จบรอบไลฟ์กลยุทธ์: {strategy_name.upper()} ===\n")

@@ -175,8 +175,12 @@ class MT5Integration:
             "1m": mt5.TIMEFRAME_M1,
             "5m": mt5.TIMEFRAME_M5,
             "15m": mt5.TIMEFRAME_M15,
+            "30m": mt5.TIMEFRAME_M30,
             "1h": mt5.TIMEFRAME_H1,
-            "1d": mt5.TIMEFRAME_D1
+            "4h": mt5.TIMEFRAME_H4,
+            "1d": mt5.TIMEFRAME_D1,
+            "1w": mt5.TIMEFRAME_W1,
+            "1wk": mt5.TIMEFRAME_W1
         }
         
         mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_M15)
@@ -215,7 +219,7 @@ class MT5Integration:
             "floating_pnl": acc.profit
         }
 
-    def get_open_positions(self, symbol="XAUUSD"):
+    def get_open_positions(self, symbol="XAUUSD", magic=None):
         """ดึงรายการออเดอร์ที่เปิดอยู่ ณ ปัจจุบัน"""
         symbol = self.resolve_symbol(symbol)
         if not self.connect():
@@ -228,6 +232,8 @@ class MT5Integration:
             
         positions_list = []
         for pos in positions:
+            if magic is not None and pos.magic != int(magic):
+                continue
             # แปลงทิศทางออเดอร์
             direction = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
             positions_list.append({
@@ -238,11 +244,12 @@ class MT5Integration:
                 "sl": pos.sl,
                 "tp": pos.tp,
                 "pnl": pos.profit,
-                "margin": 0.0             # คำนวณฝั่ง MT5 อัตโนมัติอยู่แล้ว
+                "margin": 0.0,            # คำนวณฝั่ง MT5 อัตโนมัติอยู่แล้ว
+                "magic": pos.magic
             })
         return positions_list
 
-    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD"):
+    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD", magic=123456):
         """
         ส่งคำสั่งเปิดออเดอร์ (Market Order) หรือ ตั้งคำสั่งรอดำเนินการ (Pending Order)
         - direction: 'BUY' หรือ 'SELL'
@@ -250,6 +257,7 @@ class MT5Integration:
         - sl: จุดตัดขาดทุน
         - tp: จุดทำกำไร
         - entry: ราคาที่ต้องการเข้าเทรด (หากละเว้นไว้ จะเปิดออเดอร์ที่ราคาปัจจุบันทันที)
+        - magic: หมายเลข Magic Number ของ Agent
         """
         symbol = self.resolve_symbol(symbol)
         if not self.connect():
@@ -329,7 +337,7 @@ class MT5Integration:
             "sl": final_sl,
             "tp": final_tp,
             "deviation": 20,
-            "magic": 123456,
+            "magic": int(magic),
             "comment": "LLM Auto Trade",
             "type_time": mt5.ORDER_TIME_GTC
         }
@@ -381,7 +389,7 @@ class MT5Integration:
             "position": ticket,
             "price": execution_price,
             "deviation": 20,
-            "magic": 123456,
+            "magic": pos.magic,
             "comment": "LLM Close Position",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC
@@ -492,7 +500,7 @@ class MT5Integration:
         logging.info(f"แก้ไข SL/TP ออเดอร์ {ticket} สำเร็จ | SL ใหม่: {final_sl}, TP ใหม่: {final_tp}")
         return {"status": "SUCCESS", "final_sl": final_sl, "final_tp": final_tp}
 
-    def get_pending_orders(self, symbol="XAUUSD"):
+    def get_pending_orders(self, symbol="XAUUSD", magic=None):
         """ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) ที่ยังไม่ถูกจับคู่"""
         symbol = self.resolve_symbol(symbol)
         if not self.connect():
@@ -505,6 +513,8 @@ class MT5Integration:
             
         orders_list = []
         for ord in orders:
+            if magic is not None and ord.magic != int(magic):
+                continue
             # ตรวจสอบประเภท Pending Order
             ord_type = ""
             if ord.type == mt5.ORDER_TYPE_BUY_LIMIT: ord_type = "BUY_LIMIT"
@@ -542,7 +552,7 @@ class MT5Integration:
         logging.info(f"ยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {ticket} สำเร็จ")
         return {"status": "SUCCESS"}
 
-    def get_trade_history(self, symbol="XAUUSD", days=7):
+    def get_trade_history(self, symbol="XAUUSD", days=7, magic=None):
         """ดึงประวัติการเทรดที่ปิดแล้วย้อนหลังสำหรับสินทรัพย์ที่กำหนด"""
         symbol = self.resolve_symbol(symbol)
         if not self.connect():
@@ -598,6 +608,9 @@ class MT5Integration:
             if not open_deal or not close_deal:
                 continue
                 
+            if magic is not None and open_deal.magic != int(magic):
+                continue
+                
             direction = "BUY" if open_deal.type == mt5.DEAL_TYPE_BUY else "SELL"
             
             # เวลาเปิด/ปิด (เวลา Server MT5)
@@ -626,7 +639,8 @@ class MT5Integration:
                 "pnl": round(total_pnl, 2),
                 "open_time": open_time_str,
                 "close_time": close_time_str,
-                "close_reason": close_reason
+                "close_reason": close_reason,
+                "magic": open_deal.magic
             })
             
         history_list.sort(key=lambda x: x["close_time"], reverse=True)
