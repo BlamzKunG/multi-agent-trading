@@ -39,11 +39,18 @@ class TradingAgents:
             "claude-sonnet-4-5"
         ]
         
-        # บันทึกโมเดลที่เปิดใช้งานได้สำเร็จครั้งล่าสุด
-        self.last_successful_analysis_model = None
-        self.last_successful_management_model = None
+        # บันทึกโมเดลที่เปิดใช้งานได้สำเร็จล่าสุดแบบ Global และเวลาบันทึก
+        self.last_successful_model = None
+        self.last_success_time = 0.0
 
     def _get_models_to_try(self, model, category):
+        # รีเซ็ตแคชโมเดลสำเร็จล่าสุดทุกๆ 15 นาที เพื่อให้ระบบมีโอกาสกลับมาลองใช้รุ่นที่ถูกที่สุดใหม่
+        import time
+        if self.last_successful_model and (time.time() - self.last_success_time > 15 * 60):
+            logging.info("⏰ ครบ 15 นาทีแล้ว: รีเซ็ตโมเดลสำเร็จล่าสุดเพื่อกลับไปทดสอบใช้รุ่นที่ถูกที่สุดใหม่")
+            self.last_successful_model = None
+            self.last_success_time = 0.0
+
         if category == "analysis":
             catalog = list(self.analysis_models_catalog)
         elif category == "management":
@@ -57,9 +64,17 @@ class TradingAgents:
                 catalog = list(self.analysis_models_catalog)
                 category = "analysis"
                 
-        # เพื่อให้แน่ใจว่ารุ่นที่ถูกที่สุดในแค็ตตาล็อกจะถูกเลือกมาใช้งานก่อนเป็นลำดับแรกเสมอ (Cheapest-first)
-        models_to_try = list(catalog)
+        models_to_try = []
         
+        # 1. ลองใช้โมเดลสำเร็จล่าสุดแบบ Global ก่อนเป็นอันดับแรก
+        if self.last_successful_model:
+            models_to_try.append(self.last_successful_model)
+            
+        # 2. ตามด้วยลำดับโมเดลในแค็ตตาล็อกตามลำดับราคาถูกสุดไปแพงสุด
+        for m in catalog:
+            if m not in models_to_try:
+                models_to_try.append(m)
+                
         # ป้องกันกรณีระบุโมเดลอื่นนอกเหนือจากที่มีในแค็ตตาล็อก ให้ใส่ต่อท้าย
         if model and model not in models_to_try:
             models_to_try.append(model)
@@ -138,13 +153,11 @@ class TradingAgents:
                     else:
                         content = result['choices'][0]['message']['content']
                     
-                    # หากเรียกสำเร็จและระบุหมวดหมู่ ให้เซฟเป็นโมเดลที่ใช้งานได้สำเร็จล่าสุด
-                    if resolved_category == "analysis":
-                        self.last_successful_analysis_model = current_model
-                        logging.info(f"💾 บันทึกโมเดลวิเคราะห์สำเร็จล่าสุด: {current_model}")
-                    elif resolved_category == "management":
-                        self.last_successful_management_model = current_model
-                        logging.info(f"💾 บันทึกโมเดลจัดการสำเร็จล่าสุด: {current_model}")
+                    # หากเรียกสำเร็จ ให้เซฟเป็นโมเดลที่ใช้งานได้สำเร็จล่าสุดแบบ Global พร้อมเวลาบันทึก
+                    import time
+                    self.last_successful_model = current_model
+                    self.last_success_time = time.time()
+                    logging.info(f"💾 บันทึกโมเดลสำเร็จล่าสุดแบบ Global: {current_model}")
                         
                     if json_response:
                         try:
