@@ -208,7 +208,11 @@ class MT5TradingBotOrchestrator:
             
         logging.info(f"Live กลยุทธ์ {strategy_name}: ไม่มีออเดอร์ค้าง รันระบบวิเคราะห์...")
         
-        # 6. ดึงประวัติย้อนหลังและเตรียมข้อมูลสะท้อนตนเอง (Self-Reflection)
+        # 6. ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) และประวัติย้อนหลังของกลยุทธ์นี้
+        pending_orders = []
+        if strategy_name in ["daytrading", "swingtrading"]:
+            pending_orders = self.mt5_bridge.get_pending_orders(self.symbol, magic=magic_number)
+            
         closed_trades = self.mt5_bridge.get_trade_history(symbol=self.symbol, days=15, magic=magic_number)
         perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
         
@@ -240,7 +244,8 @@ class MT5TradingBotOrchestrator:
                 balance=balance, symbol=self.symbol,
                 leverage=100.0, spread=spread,
                 performance_stats=perf_stats, trade_history=closed_trades,
-                regime_report=regime
+                regime_report=regime,
+                pending_orders=pending_orders
             )
             
         elif strategy_name == "swingtrading":
@@ -254,7 +259,8 @@ class MT5TradingBotOrchestrator:
                 balance=balance, symbol=self.symbol,
                 leverage=100.0, spread=spread,
                 performance_stats=perf_stats, trade_history=closed_trades,
-                regime_report=regime
+                regime_report=regime,
+                pending_orders=pending_orders
             )
             
         if not decision:
@@ -263,10 +269,69 @@ class MT5TradingBotOrchestrator:
             
         action = decision.get("action")
         reason = decision.get("reasoning")
+        ticket = decision.get("ticket")
         logging.info(f"Live ผลลัพธ์กลยุทธ์ {strategy_name}: {action} | เหตุผล: {reason}")
         
-        if action in ["BUY", "SELL"]:
+        # 8. ดำเนินการจัดการออเดอร์ตามผลการวิเคราะห์
+        if action == "HOLD":
+            hold_min = int(decision.get("hold_minutes") or 60)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            logging.info(f"Live พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
+            msg = (
+                f"🟡 **[MT5 Live - Strategy HOLD]**\n"
+                f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                f"**Action:** HOLD | **Hold Duration:** พัก {hold_min} นาที\n"
+                f"**Reason:** {reason}"
+            )
+            self.send_discord_message(msg)
+            
+        elif action == "CANCEL":
+            if ticket:
+                res = self.mt5_bridge.cancel_pending_order(ticket)
+                if res.get("status") == "SUCCESS":
+                    msg = (
+                        f"🔴 **[MT5 Live - Cancel Pending]**\n"
+                        f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Cancel Pending Order #{ticket}\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
+            hold_min = int(decision.get("hold_minutes") or 60)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            
+        elif action == "MODIFY":
+            if ticket:
+                entry = decision.get("entry")
+                sl = decision.get("sl")
+                tp = decision.get("tp")
+                if entry:
+                    res = self.mt5_bridge.modify_pending_order(ticket, price=entry, sl=sl, tp=tp)
+                    if res.get("status") == "SUCCESS":
+                        msg = (
+                            f"🔵 **[MT5 Live - Modify Pending]**\n"
+                            f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                            f"**Action:** Modify Pending Order #{ticket}\n"
+                            f"**New Target:** Entry: {entry} | SL: {sl or '-'} | TP: {tp or '-'}\n"
+                            f"**Reason:** {reason}"
+                        )
+                        self.send_discord_message(msg)
+            hold_min = int(decision.get("hold_minutes") or 60)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            
+        elif action == "CANCEL_AND_NEW" or action in ["BUY", "SELL"]:
+            # ถ้ามี ticket หรือเป็น CANCEL_AND_NEW ให้ยกเลิกคำสั่งเดิมก่อน
+            if ticket or action == "CANCEL_AND_NEW":
+                old_ticket = ticket or (pending_orders[0]["id"] if pending_orders else None)
+                if old_ticket:
+                    self.mt5_bridge.cancel_pending_order(old_ticket)
+                    logging.info(f"ยกเลิกคำสั่งล่วงหน้าเดิม #{old_ticket} ก่อนตั้งคำสั่งใหม่")
+            
+            direction = decision.get("new_direction") or decision.get("direction") or ("BUY" if action == "BUY" else "SELL")
+            if direction not in ["BUY", "SELL"]:
+                direction = "BUY"  # Fallback
+                
             lot = decision.get("lot", 0.01)
+            entry = decision.get("entry")
             sl = decision.get("sl")
             tp = decision.get("tp")
             
@@ -274,28 +339,24 @@ class MT5TradingBotOrchestrator:
             if lot > max_allowed_lot:
                 lot = max_allowed_lot
                 
-            res = self.mt5_bridge.open_position(direction=action, lot=lot, sl=sl, tp=tp, magic=magic_number, symbol=self.symbol)
+            res = self.mt5_bridge.open_position(direction=direction, lot=lot, sl=sl, tp=tp, entry=entry, magic=magic_number, symbol=self.symbol)
             
             if res.get("status") == "SUCCESS":
                 strat["next_run_time"] = 0
+                is_pending = res.get("is_pending", False)
+                order_text = "Pending Order" if is_pending else "Market Position"
+                icon = "🟡" if is_pending else "🟢"
                 msg = (
-                    f"🟢 **[MT5 Live - New Position]**\n"
+                    f"{icon} **[MT5 Live - New {order_text}]**\n"
                     f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
-                    f"**Action:** {action} | **Lot Size:** {lot:.2f}\n"
+                    f"**Action:** {direction} | **Lot Size:** {lot:.2f}\n"
+                    f"**Price:** {entry or 'Market'}\n"
                     f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
                     f"**Reason:** {reason}"
                 )
                 self.send_discord_message(msg)
-        else:
-            hold_min = int(decision.get("hold_minutes") or 5)
-            strat["next_run_time"] = time.time() + (hold_min * 60)
-            logging.info(f"Live พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
-            msg = (
-                f"🟡 **[MT5 Live - Strategy Alert]**\n"
-                f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
-                f"**Action:** HOLD | **Hold Duration:** พัก {hold_min} นาที\n"
-                f"**Reason:** {reason}"
-            )
-            self.send_discord_message(msg)
-            
+            else:
+                logging.error(f"ไม่สามารถทำรายการเปิดออเดอร์ได้: {res.get('message')}")
+        
         logging.info(f"=== จบรอบไลฟ์กลยุทธ์: {strategy_name.upper()} ===\n")
+

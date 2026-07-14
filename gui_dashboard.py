@@ -744,6 +744,7 @@ class TradingBotGUI:
                     pnl = status["floating_pnl"]
                     symbol = bot_sim.symbol
                     open_pos = status["open_positions"]
+                    pending_orders = status.get("pending_orders", [])
                     history = status.get("history", [])
                     
                     # คำนวณ Performance สถิติรายตัว
@@ -757,7 +758,7 @@ class TradingBotGUI:
                             pass
                     
                     self.root.after(0, lambda: self.refresh_metrics(bal, eq, pnl, price, symbol))
-                    self.root.after(0, lambda: self.refresh_positions_tree(open_pos, magic_map))
+                    self.root.after(0, lambda: self.refresh_positions_tree(open_pos, pending_orders, magic_map))
                     self.root.after(0, lambda: self.refresh_history_tree(history, magic_map))
                     
                 else:
@@ -771,6 +772,7 @@ class TradingBotGUI:
                         
                         # ใน GUI รวมประวัติพอร์ตทั้งหมดจาก MT5 แล้วเอามาฟิลเตอร์แสดงบน Performance
                         open_pos = bot_mt5.mt5_bridge.get_open_positions(bot_mt5.symbol)
+                        pending_orders = bot_mt5.mt5_bridge.get_pending_orders(bot_mt5.symbol)
                         history = bot_mt5.mt5_bridge.get_trade_history(bot_mt5.symbol, days=30)
                         
                         bal = acc_status["balance"]
@@ -790,7 +792,7 @@ class TradingBotGUI:
                                 pass
                                 
                         self.root.after(0, lambda: self.refresh_metrics(bal, eq, pnl, price, symbol))
-                        self.root.after(0, lambda: self.refresh_positions_tree(open_pos, magic_map))
+                        self.root.after(0, lambda: self.refresh_positions_tree(open_pos, pending_orders, magic_map))
                         self.root.after(0, lambda: self.refresh_history_tree(history, magic_map))
                     else:
                         self.root.after(0, self.refresh_offline)
@@ -817,8 +819,9 @@ class TradingBotGUI:
         self.card_pnl.lbl_val.config(text="$0.00", fg="#94a3b8")
         self.card_price.lbl_val.config(text="MT5 Terminal Disconnected", fg="#ef4444")
         
-    def refresh_positions_tree(self, open_pos, magic_map):
+    def refresh_positions_tree(self, open_pos, pending_orders, magic_map):
         self.tree_positions.delete(*self.tree_positions.get_children())
+        # 1. Display Open Positions
         for pos in open_pos:
             magic = pos.get("magic", 0)
             strat_label = magic_map.get(magic, f"MANUAL / OTHER ({magic})")
@@ -832,6 +835,22 @@ class TradingBotGUI:
                 f"{pos['sl']:.2f}" if pos.get('sl') else "-",
                 f"{pos['tp']:.2f}" if pos.get('tp') else "-",
                 f"${pos['pnl']:.2f}"
+            ))
+        # 2. Display Pending Orders
+        for ord in pending_orders:
+            magic = ord.get("magic", 0)
+            strat_label = magic_map.get(magic, f"MANUAL / OTHER ({magic})")
+            ord_type = ord.get("type", "PENDING")
+            
+            self.tree_positions.insert("", "end", values=(
+                ord["id"],
+                strat_label,
+                ord_type,
+                f"{ord['lot']:.2f}",
+                f"{ord['entry_price']:.2f}",
+                f"{ord['sl']:.2f}" if ord.get('sl') else "-",
+                f"{ord['tp']:.2f}" if ord.get('tp') else "-",
+                "PENDING"
             ))
             
     def refresh_history_tree(self, history, magic_map):

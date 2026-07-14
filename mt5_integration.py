@@ -552,6 +552,45 @@ class MT5Integration:
         logging.info(f"ยกเลิกคำสั่งซื้อขายล่วงหน้า Ticket {ticket} สำเร็จ")
         return {"status": "SUCCESS"}
 
+    def modify_pending_order(self, ticket, price, sl=None, tp=None):
+        """แก้ไขราคาเข้า จุด SL หรือ TP ของคำสั่งซื้อขายล่วงหน้า (Pending Order)"""
+        if not self.connect():
+            return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
+            
+        ord_info = mt5.orders_get(ticket=int(ticket))
+        if ord_info is None or len(ord_info) == 0:
+            return {"status": "ERROR", "message": f"ไม่พบคำสั่งซื้อขายล่วงหน้า #{ticket}"}
+            
+        ord = ord_info[0]
+        symbol = ord.symbol
+        sym_info = mt5.symbol_info(symbol)
+        if not sym_info:
+            return {"status": "ERROR", "message": f"ไม่พบข้อมูลคู่เงิน {symbol}"}
+            
+        digits = sym_info.digits
+        tick_size = sym_info.trade_tick_size
+        
+        final_price = round(round(float(price) / tick_size) * tick_size, digits)
+        final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
+        final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
+        
+        request = {
+            "action": mt5.TRADE_ACTION_MODIFY,
+            "order": int(ticket),
+            "price": final_price,
+            "sl": final_sl,
+            "tp": final_tp,
+            "type_time": mt5.ORDER_TIME_GTC
+        }
+        
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"ไม่สามารถแก้ไขคำสั่งล่วงหน้า #{ticket} ได้: {result.comment}")
+            return {"status": "FAILED", "message": result.comment}
+            
+        logging.info(f"แก้ไขคำสั่งซื้อขายล่วงหน้า Ticket #{ticket} สำเร็จ")
+        return {"status": "SUCCESS"}
+
     def get_trade_history(self, symbol="XAUUSD", days=7, magic=None):
         """ดึงประวัติการเทรดที่ปิดแล้วย้อนหลังสำหรับสินทรัพย์ที่กำหนด"""
         symbol = self.resolve_symbol(symbol)

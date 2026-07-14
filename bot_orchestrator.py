@@ -200,7 +200,11 @@ class TradingBotOrchestrator:
             
         logging.info(f"กลยุทธ์ {strategy_name}: ไม่มีออเดอร์ค้าง รันระบบวิเคราะห์ด้วย Agent...")
         
-        # 5. ดึงประวัติย้อนหลังและเตรียมข้อมูลสถิติเพื่อนำมาสะท้อนตนเอง (Self-Reflection)
+        # 5. ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) และประวัติย้อนหลังของกลยุทธ์นี้
+        pending_orders = []
+        if strategy_name in ["daytrading", "swingtrading"]:
+            pending_orders = self.exchange.get_pending_orders(symbol=self.symbol, magic=magic_number)
+            
         closed_trades = status.get('history', [])
         perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
         
@@ -240,7 +244,8 @@ class TradingBotOrchestrator:
                 balance=self.exchange.balance, symbol=self.symbol,
                 leverage=self.exchange.leverage, spread=0.0,
                 performance_stats=perf_stats, trade_history=closed_trades,
-                regime_report=regime
+                regime_report=regime,
+                pending_orders=pending_orders
             )
             
         elif strategy_name == "swingtrading":
@@ -262,7 +267,8 @@ class TradingBotOrchestrator:
                 balance=self.exchange.balance, symbol=self.symbol,
                 leverage=self.exchange.leverage, spread=0.0,
                 performance_stats=perf_stats, trade_history=closed_trades,
-                regime_report=regime
+                regime_report=regime,
+                pending_orders=pending_orders
             )
             
         if not decision:
@@ -271,10 +277,69 @@ class TradingBotOrchestrator:
             
         action = decision.get("action")
         reason = decision.get("reasoning")
+        ticket = decision.get("ticket")
         logging.info(f"ผลวิเคราะห์ {strategy_name}: {action} | Reasoning: {reason}")
         
-        if action in ["BUY", "SELL"]:
+        # 7. ดำเนินการจัดการออเดอร์ตามผลการวิเคราะห์
+        if action == "HOLD":
+            hold_min = int(decision.get("hold_minutes") or 60)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            logging.info(f"พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
+            msg = (
+                f"🟡 **[Sim Mode - Strategy HOLD]**\n"
+                f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                f"**Action:** HOLD | **Hold Duration:** พัก {hold_min} นาที\n"
+                f"**Reason:** {reason}"
+            )
+            self.send_discord_message(msg)
+            
+        elif action == "CANCEL":
+            if ticket:
+                res = self.exchange.cancel_pending_order(ticket)
+                if res.get("status") == "SUCCESS":
+                    msg = (
+                        f"🔴 **[Sim Mode - Cancel Pending]**\n"
+                        f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                        f"**Action:** Cancel Pending Order #{ticket}\n"
+                        f"**Reason:** {reason}"
+                    )
+                    self.send_discord_message(msg)
+            hold_min = int(decision.get("hold_minutes") or 60)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            
+        elif action == "MODIFY":
+            if ticket:
+                entry = decision.get("entry")
+                sl = decision.get("sl")
+                tp = decision.get("tp")
+                if entry:
+                    res = self.exchange.modify_pending_order(ticket, price=entry, sl=sl, tp=tp)
+                    if res.get("status") == "SUCCESS":
+                        msg = (
+                            f"🔵 **[Sim Mode - Modify Pending]**\n"
+                            f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
+                            f"**Action:** Modify Pending Order #{ticket}\n"
+                            f"**New Target:** Entry: {entry} | SL: {sl or '-'} | TP: {tp or '-'}\n"
+                            f"**Reason:** {reason}"
+                        )
+                        self.send_discord_message(msg)
+            hold_min = int(decision.get("hold_minutes") or 60)
+            strat["next_run_time"] = time.time() + (hold_min * 60)
+            
+        elif action == "CANCEL_AND_NEW" or action in ["BUY", "SELL"]:
+            # ถ้ามี ticket หรือเป็น CANCEL_AND_NEW ให้ยกเลิกคำสั่งเดิมก่อน
+            if ticket or action == "CANCEL_AND_NEW":
+                old_ticket = ticket or (pending_orders[0]["id"] if pending_orders else None)
+                if old_ticket:
+                    self.exchange.cancel_pending_order(old_ticket)
+                    logging.info(f"ยกเลิกคำสั่งล่วงหน้าเดิม #{old_ticket} ก่อนตั้งคำสั่งใหม่")
+            
+            direction = decision.get("new_direction") or decision.get("direction") or ("BUY" if action == "BUY" else "SELL")
+            if direction not in ["BUY", "SELL"]:
+                direction = "BUY"  # Fallback
+                
             lot = decision.get("lot", 0.01)
+            entry = decision.get("entry")
             sl = decision.get("sl")
             tp = decision.get("tp")
             
@@ -282,28 +347,24 @@ class TradingBotOrchestrator:
             if lot > max_allowed_lot:
                 lot = max_allowed_lot
                 
-            res = self.exchange.open_position(direction=action, lot=lot, sl=sl, tp=tp, magic=magic_number)
+            res = self.exchange.open_position(direction=direction, lot=lot, sl=sl, tp=tp, entry=entry, magic=magic_number)
             
             if res.get("status") == "SUCCESS":
                 strat["next_run_time"] = 0
+                is_pending = res.get("is_pending", False)
+                order_text = "Pending Order" if is_pending else "Market Position"
+                icon = "🟡" if is_pending else "🟢"
                 msg = (
-                    f"🟢 **[Sim Mode - New Position]**\n"
+                    f"{icon} **[Sim Mode - New {order_text}]**\n"
                     f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
-                    f"**Action:** {action} | **Lot Size:** {lot:.2f}\n"
+                    f"**Action:** {direction} | **Lot Size:** {lot:.2f}\n"
+                    f"**Price:** {entry or 'Market'}\n"
                     f"**Target:** SL: {sl or '-'} | TP: {tp or '-'}\n"
                     f"**Reason:** {reason}"
                 )
                 self.send_discord_message(msg)
-        else:
-            hold_min = int(decision.get("hold_minutes") or 5)
-            strat["next_run_time"] = time.time() + (hold_min * 60)
-            logging.info(f"พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
-            msg = (
-                f"🟡 **[Sim Mode - Strategy Alert]**\n"
-                f"**Strategy:** {strategy_name.upper()} | **Asset:** {self.symbol}\n"
-                f"**Action:** HOLD | **Hold Duration:** พัก {hold_min} นาที\n"
-                f"**Reason:** {reason}"
-            )
-            self.send_discord_message(msg)
-            
+            else:
+                logging.error(f"ไม่สามารถทำรายการเปิดออเดอร์ในระบบจำลองได้: {res.get('message')}")
+        
         logging.info(f"=== จบรอบกลยุทธ์: {strategy_name.upper()} ===\n")
+
