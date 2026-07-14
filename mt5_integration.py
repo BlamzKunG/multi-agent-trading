@@ -48,8 +48,42 @@ class MT5Integration:
             self.initialized = False
             logging.info("ปิดการเชื่อมต่อ MetaTrader 5 สำเร็จ")
 
+    def resolve_symbol(self, symbol):
+        """ค้นหาและแปลงชื่อคู่เงินให้รองรับชื่อพิเศษของโบรกเกอร์ (เช่น XAUUSD-ECN, XAUUSDm)"""
+        if not hasattr(self, 'symbol_cache'):
+            self.symbol_cache = {}
+            
+        if symbol in self.symbol_cache:
+            return self.symbol_cache[symbol]
+            
+        if not self.connect():
+            return symbol
+            
+        # 1. ลองค้นหาแบบตรงตัว
+        sym_info = mt5.symbol_info(symbol)
+        if sym_info is not None:
+            self.symbol_cache[symbol] = symbol
+            return symbol
+            
+        # 2. ลองค้นหาคำใกล้เคียงที่มีคำสำคัญ (XAU, BTC)
+        symbols = mt5.symbols_get()
+        if symbols:
+            search_key = "XAU" if "XAU" in symbol.upper() else "BTC" if "BTC" in symbol.upper() else None
+            if search_key:
+                for sym in symbols:
+                    name = sym.name.upper()
+                    if search_key in name and "USD" in name:
+                        logging.info(f"🔍 [Auto-Discovery] พบสัญลักษณ์ทดแทนบนโบรกเกอร์สำหรับ {symbol} -> {sym.name}")
+                        self.symbol_cache[symbol] = sym.name
+                        mt5.symbol_select(sym.name, True)
+                        return sym.name
+                        
+        self.symbol_cache[symbol] = symbol
+        return symbol
+
     def get_current_price(self, symbol="XAUUSD"):
         """ดึงราคา Tick ล่าสุด (Bid/Ask) จาก Broker"""
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return None
             
@@ -80,6 +114,7 @@ class MT5Integration:
         - timeframe: '1m', '5m', '15m', '1h', '1d'
         - num_candles: จำนวนแท่งเทียนที่ต้องการย้อนหลัง
         """
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return pd.DataFrame()
             
@@ -130,6 +165,7 @@ class MT5Integration:
 
     def get_open_positions(self, symbol="XAUUSD"):
         """ดึงรายการออเดอร์ที่เปิดอยู่ ณ ปัจจุบัน"""
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return []
             
@@ -163,6 +199,7 @@ class MT5Integration:
         - tp: จุดทำกำไร
         - entry: ราคาที่ต้องการเข้าเทรด (หากละเว้นไว้ จะเปิดออเดอร์ที่ราคาปัจจุบันทันที)
         """
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
@@ -264,6 +301,7 @@ class MT5Integration:
 
     def close_position(self, ticket, symbol="XAUUSD"):
         """ปิดออเดอร์ที่ระบุด้วยตั๋ว Ticket ID"""
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
@@ -404,6 +442,7 @@ class MT5Integration:
 
     def get_pending_orders(self, symbol="XAUUSD"):
         """ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) ที่ยังไม่ถูกจับคู่"""
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return []
             
@@ -453,6 +492,7 @@ class MT5Integration:
 
     def get_trade_history(self, symbol="XAUUSD", days=7):
         """ดึงประวัติการเทรดที่ปิดแล้วย้อนหลังสำหรับสินทรัพย์ที่กำหนด"""
+        symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return []
             
