@@ -243,91 +243,68 @@ class TradingBotOrchestrator:
                 
         else:
             # ----------------------------------------------------
-            # 📌 สาขา B: มีออเดอร์ค้างอยู่ -> จัดการ Simple Trailing Stop (Python) และเช็ค Reversal (LLM)
+            # 📌 สาขา B: มีออเดอร์ค้างอยู่ -> จัดการ ATR Trailing Stop (Python เท่านั้น ไม่พึ่ง Agent เพื่อประหยัด Token)
             # ----------------------------------------------------
             logging.info(f"สถานะพอร์ต: มีออเดอร์ค้างอยู่ {len(open_positions)} ไม้")
             
-            # กำหนดระยะตามประเภทสินทรัพย์
-            if "BTC" in self.symbol.upper():
-                activation_dist = 50.0
-                trail_dist = 50.0
-            else:  # XAUUSD
-                activation_dist = 2.0
-                trail_dist = 2.0
+            # ดึงข้อมูลราคาย้อนหลังเพื่อคำนวณ ATR
+            df_5m = self.data_feed.get_historical_data(interval="5m", period="1d")
+            df_5m_anal = self.data_feed.analyze_price_action(df_5m)
+            
+            if not df_5m_anal.empty and 'atr_14' in df_5m_anal.columns:
+                atr = float(df_5m_anal['atr_14'].iloc[-1])
+            else:
+                atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
                 
+            activation_dist = atr * 1.5
+            trail_dist = atr * 1.5
+            trail_step = atr * 0.3
+            
+            logging.info(f"📊 [ATR Trailing Config] ATR: {atr:.2f} | Activation: {activation_dist:.2f} | Trail Dist: {trail_dist:.2f} | Trail Step: {trail_step:.2f}")
+            
             for pos in open_positions:
                 pos_id = pos['id']
                 direction = pos['direction']
                 entry_price = float(pos['entry_price'])
                 current_sl = pos['sl']
                 
-                # 1. จัดการ Simple Trailing Stop อัตโนมัติทางฝั่ง Python
                 trail_updated = False
                 new_sl = None
                 
                 if direction == 'BUY':
+                    # ถ้าราคาปัจจุบันวิ่งทำกำไรเกิน activation_dist
                     if current_price - entry_price >= activation_dist:
                         target_sl = current_price - trail_dist
+                        # ขยับ SL หากไม่มี SL อยู่ก่อน หรือ SL ใหม่สูงกว่า SL เดิม
                         if current_sl is None or target_sl > float(current_sl):
-                            new_sl = target_sl
-                            trail_updated = True
+                            # ต้องมากกว่าเดิมอย่างน้อย trail_step
+                            if current_sl is None or (target_sl - float(current_sl)) >= trail_step:
+                                new_sl = target_sl
+                                trail_updated = True
                 elif direction == 'SELL':
+                    # ถ้าราคาปัจจุบันวิ่งทำกำไรเกิน activation_dist (ในทิศทางเซลล์)
                     if entry_price - current_price >= activation_dist:
                         target_sl = current_price + trail_dist
+                        # ขยับ SL หากไม่มี SL อยู่ก่อน หรือ SL ใหม่ต่ำกว่า SL เดิม
                         if current_sl is None or target_sl < float(current_sl):
-                            new_sl = target_sl
-                            trail_updated = True
-                            
+                            # ต้องต่ำกว่าเดิมอย่างน้อย trail_step
+                            if current_sl is None or (float(current_sl) - target_sl) >= trail_step:
+                                new_sl = target_sl
+                                trail_updated = True
+                                
                 if trail_updated:
                     self.exchange.modify_sl_tp(pos_id, new_sl=new_sl)
-                    logging.info(f"📈 [Simple Trailing Stop] เลื่อนจุด SL ของออเดอร์ {pos_id} ไปที่ {new_sl:.2f} (ราคาตลาด {current_price:.2f})")
+                    logging.info(f"📈 [ATR Trailing Stop] เลื่อนจุด SL ของออเดอร์ {pos_id} ไปที่ {new_sl:.2f} (ราคาตลาด {current_price:.2f})")
                     msg = (
-                        f"📈 **[Sim Mode - Simple Trailing Stop]**\n"
+                        f"📈 **[Sim Mode - ATR Trailing Stop]**\n"
                         f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
                         f"**Action:** Move SL -> {new_sl:.2f}\n"
-                        f"**Reason:** Price moved in favor by {activation_dist:.1f} USD"
+                        f"**Reason:** Price moved in favor with ATR-based activation ({activation_dist:.2f} USD)"
                     )
                     self.send_discord_message(msg)
                     pos['sl'] = new_sl
-
-                # 2. เรียกใช้ Manager Agent (LLM) เพื่อประเมินสภาวะราคาขัดแย้งสำหรับการคัทหรือล็อกกำไรด่วน
-                decision = self.agents.manage_position(
-                    position_details=pos,
-                    current_price=current_price,
-                    balance=self.exchange.balance,
-                    symbol=self.symbol
-                )
-                
-                if not decision:
-                    logging.error(f"ไม่ได้รับการตอบกลับจาก Manager Agent สำหรับออเดอร์ {pos_id}")
-                    continue
-                    
-                action = decision.get("action")
-                reason = decision.get("reasoning")
-                logging.info(f"คำสั่งคุมความเสี่ยงของออเดอร์ {pos_id}: {action} | เหตุผล: {reason}")
-                
-                if action == "CLOSE":
-                    self.exchange.close_position(pos_id)
-                    msg = (
-                        f"🔴 **[Sim Mode - Close Trade]**\n"
-                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
-                        f"**Action:** CLOSE POSITION (สั่งปิดออเดอร์)\n"
-                        f"**Reason:** {reason}"
-                    )
-                    self.send_discord_message(msg)
-                elif action == "TRAILING_STOP":
-                    new_sl = decision.get("new_sl")
-                    new_tp = decision.get("new_tp")
-                    self.exchange.modify_sl_tp(pos_id, new_sl=new_sl, new_tp=new_tp)
-                    msg = (
-                        f"📈 **[Sim Mode - Trailing Stop]**\n"
-                        f"**Order ID:** #{pos_id} | **Asset:** {self.symbol}\n"
-                        f"**Action:** Move SL -> {new_sl or '-'} | TP -> {new_tp or '-'}\n"
-                        f"**Reason:** {reason}"
-                    )
-                    self.send_discord_message(msg)
                 else:
-                    logging.info(f"ถือออเดอร์ {pos_id} ต่อไปตามเงื่อนไขเดิม (HOLD)")
+                    logging.info(f"ถือออเดอร์ {pos_id} ต่อไปตามเงื่อนไขเดิม (HOLD) - ยังไม่ถึงเกณฑ์ขยับ SL")
                     
         logging.info("=== จบรอบการทำงาน ===\n")
 
