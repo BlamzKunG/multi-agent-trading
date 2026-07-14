@@ -12,7 +12,7 @@ class TradingAgents:
     ระบบตัวแทนอัจฉริยะ (Multi-Agent Trading System)
     ทำหน้าที่วิเคราะห์กราฟและบริหารความเสี่ยงด้วยโมเดลภาษาผ่าน MaxPlus AI API
     """
-    def __init__(self, api_key, base_url="https://api.maxplus-ai.cc/v1", analysis_model="deepseek-v4-pro", management_model="deepseek-v4-flash"):
+    def __init__(self, api_key, base_url="https://api.maxplus-ai.cc/v1", analysis_model="claude-sonnet-5", management_model="claude-haiku-4-5-20251001"):
         self.api_key = api_key
         self.base_url = base_url
         self.headers = {
@@ -22,18 +22,19 @@ class TradingAgents:
         self.analysis_model = analysis_model
         self.management_model = management_model
         
-        # รายการโมเดลที่ใช้งานได้ เรียงลำดับจากราคาถูกสุดไปแพงสุด
+        # รายการโมเดลที่ใช้งานได้ เรียงลำดับจากราคาถูกสุดไปแพงสุด (ตาม API Key ของผู้ใช้ที่รองรับเฉพาะตระกูล Claude)
         self.analysis_models_catalog = [
-            "deepseek-v4-pro",
-            "gpt-5.5",
             "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
             "claude-opus-4-8"
         ]
         
         self.management_models_catalog = [
-            "deepseek-v4-flash",
             "claude-haiku-4-5-20251001",
-            "gpt-5.4-mini"
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5"
         ]
         
         # บันทึกโมเดลที่เปิดใช้งานได้สำเร็จครั้งล่าสุด

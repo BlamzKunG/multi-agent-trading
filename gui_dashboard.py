@@ -126,8 +126,8 @@ class TradingBotGUI:
         # กำหนดตัวแปรกราฟิก
         self.var_mode = tk.StringVar(value="Simulation")
         self.var_auto_pilot = tk.BooleanVar(value=False)
-        self.var_analysis_model = tk.StringVar(value="gpt-5.5 (Native: $3.00/1M)")
-        self.var_management_model = tk.StringVar(value="gpt-5.4-mini (Native: $2.25/1M)")
+        self.var_analysis_model = tk.StringVar(value="claude-sonnet-5 (Native: $3.00/1M)")
+        self.var_management_model = tk.StringVar(value="claude-haiku-4-5-20251001 (Native: $0.25/1M)")
         
         # ตัวแปรแยกกลยุทธ์
         self.strat_vars = {
@@ -325,18 +325,19 @@ class TradingBotGUI:
         # 4. เลือกโมเดลสำหรับ Analyst และ Manager
         tk.Label(self.tab_global, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
         self.cb_analysis_model = ttk.Combobox(self.tab_global, textvariable=self.var_analysis_model, values=[
-            "gpt-5.5 (Native: $3.00/1M)",
             "claude-sonnet-4-6 (Native: $3.00/1M)",
-            "deepseek-v4-pro (DeepSeek: $0.14/1M)",
+            "claude-sonnet-5 (Native: $3.00/1M)",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
             "claude-opus-4-8 (Native: $15.00/1M)"
         ], state="readonly")
         self.cb_analysis_model.pack(fill="x", pady=(0, 10))
         
         tk.Label(self.tab_global, text="Manager Model (โมเดลควบคุมพอร์ต)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
         self.cb_management_model = ttk.Combobox(self.tab_global, textvariable=self.var_management_model, values=[
-            "gpt-5.4-mini (Native: $2.25/1M)",
             "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
-            "deepseek-v4-flash (DeepSeek: $0.07/1M)"
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5"
         ], state="readonly")
         self.cb_management_model.pack(fill="x", pady=(0, 10))
 
