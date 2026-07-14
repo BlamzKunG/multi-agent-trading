@@ -12,7 +12,7 @@ class TradingAgents:
     ระบบตัวแทนอัจฉริยะ (Multi-Agent Trading System)
     ทำหน้าที่วิเคราะห์กราฟและบริหารความเสี่ยงด้วยโมเดลภาษาผ่าน MaxPlus AI API
     """
-    def __init__(self, api_key, base_url="https://api.maxplus-ai.cc/v1", analysis_model="claude-sonnet-5", management_model="claude-sonnet-4-6"):
+    def __init__(self, api_key, base_url="https://api.maxplus-ai.cc/v1", analysis_model="deepseek-v4-pro", management_model="deepseek-v4-flash"):
         self.api_key = api_key
         self.base_url = base_url
         self.headers = {
@@ -22,26 +22,84 @@ class TradingAgents:
         self.analysis_model = analysis_model
         self.management_model = management_model
         
-    def _call_llm(self, model, messages, json_response=True, fallbacks=None):
-        """ส่งคำขอไปยัง MaxPlus AI API พร้อมรองรับทั้ง Anthropic Protocol และ OpenAI Protocol อัตโนมัติ"""
-        if fallbacks is None:
-            fallbacks = []
-            
-        models_to_try = [model] + fallbacks
+        # รายการโมเดลที่ใช้งานได้ เรียงลำดับจากราคาถูกสุดไปแพงสุด
+        self.analysis_models_catalog = [
+            "deepseek-v4-pro",
+            "gpt-5.5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-8"
+        ]
         
+        self.management_models_catalog = [
+            "deepseek-v4-flash",
+            "claude-haiku-4-5-20251001",
+            "gpt-5.4-mini"
+        ]
+        
+        # บันทึกโมเดลที่เปิดใช้งานได้สำเร็จครั้งล่าสุด
+        self.last_successful_analysis_model = None
+        self.last_successful_management_model = None
+
+    def _get_models_to_try(self, model, category):
+        if category == "analysis":
+            catalog = list(self.analysis_models_catalog)
+            last_success = self.last_successful_analysis_model
+        elif category == "management":
+            catalog = list(self.management_models_catalog)
+            last_success = self.last_successful_management_model
+        else:
+            is_management = any(m in str(model).lower() for m in ["flash", "haiku", "mini"])
+            if is_management:
+                catalog = list(self.management_models_catalog)
+                last_success = self.last_successful_management_model
+                category = "management"
+            else:
+                catalog = list(self.analysis_models_catalog)
+                last_success = self.last_successful_analysis_model
+                category = "analysis"
+                
+        models_to_try = []
+        
+        # 1. ลองใช้โมเดลสำเร็จล่าสุดก่อนเป็นอันดับแรก
+        if last_success and last_success in catalog:
+            models_to_try.append(last_success)
+            
+        # 2. ลองใช้โมเดลหลักที่ถูกกำหนดมา (ถ้ายังไม่มีอยู่ในคิว)
+        if model and model in catalog and model not in models_to_try:
+            models_to_try.append(model)
+            
+        # 3. ตามด้วยลำดับโมเดลจากราคาถูกสุดไปแพงสุด
+        for m in catalog:
+            if m not in models_to_try:
+                models_to_try.append(m)
+                
+        # ป้องกันกรณีระบุโมเดลนอกแค็ตตาล็อก
+        if model and model not in models_to_try:
+            models_to_try.insert(0, model)
+            
+        return models_to_try, category
+
+    def _call_llm(self, model, messages, json_response=True, fallbacks=None, category=None):
+        """ส่งคำขอไปยัง MaxPlus AI API พร้อมรองรับทั้ง Anthropic Protocol และ OpenAI Protocol อัตโนมัติ"""
+        if category:
+            models_to_try, resolved_category = self._get_models_to_try(model, category)
+        else:
+            if fallbacks is None:
+                fallbacks = []
+            models_to_try = [model] + fallbacks
+            resolved_category = None
+            
         for idx, current_model in enumerate(models_to_try):
             # ตรวจสอบชื่อแบรนด์โมเดล (รวมคำคีย์เวิร์ดของ Claude: claude, haiku, sonnet, opus)
             is_claude = any(keyword in current_model.lower() for keyword in ["claude", "haiku", "sonnet", "opus"])
             
             if is_claude:
-                # 📌 ใช้ Anthropic Messages API (/v1/messages)
                 url = f"{self.base_url}/messages"
                 headers = {
                     **self.headers,
                     "anthropic-version": "2023-06-01"
                 }
                 
-                # แยก System Prompt ออกตามมาตรฐานของ Anthropic
                 system_text = None
                 user_messages = []
                 for msg in messages:
@@ -57,12 +115,11 @@ class TradingAgents:
                     "model": current_model,
                     "messages": user_messages,
                     "temperature": 0.2,
-                    "max_tokens": 4096  # จำเป็นสำหรับ Anthropic
+                    "max_tokens": 4096
                 }
                 if system_text:
                     payload["system"] = system_text
             else:
-                # 📌 ใช้ OpenAI Chat Completions API (/v1/chat/completions)
                 url = f"{self.base_url}/chat/completions"
                 headers = self.headers
                 payload = {
@@ -94,11 +151,18 @@ class TradingAgents:
                     else:
                         content = result['choices'][0]['message']['content']
                     
+                    # หากเรียกสำเร็จและระบุหมวดหมู่ ให้เซฟเป็นโมเดลที่ใช้งานได้สำเร็จล่าสุด
+                    if resolved_category == "analysis":
+                        self.last_successful_analysis_model = current_model
+                        logging.info(f"💾 บันทึกโมเดลวิเคราะห์สำเร็จล่าสุด: {current_model}")
+                    elif resolved_category == "management":
+                        self.last_successful_management_model = current_model
+                        logging.info(f"💾 บันทึกโมเดลจัดการสำเร็จล่าสุด: {current_model}")
+                        
                     if json_response:
                         try:
                             return json.loads(content)
                         except Exception as json_err:
-                            # ป้องกันกรณี LLM ตอบกลับมาเป็น markdown code block ครอบ JSON
                             cleaned_content = content.strip()
                             if cleaned_content.startswith("```json"):
                                 cleaned_content = cleaned_content[7:]
@@ -120,7 +184,6 @@ class TradingAgents:
                     else:
                         logging.error(f"พยายามใช้โมเดล {current_model} ครบ {max_retries} ครั้งแล้วแต่ล้มเหลว")
             
-            # ถ้าโมเดลหลักขัดข้อง และยังมีโมเดลสำรองในลิสต์ ให้สลับไปใช้
             if idx < len(models_to_try) - 1:
                 logging.warning(f"สลับเปลี่ยนไปเรียกใช้โมเดลสำรองลำดับถัดไป: {models_to_try[idx+1]}")
                 
@@ -292,7 +355,7 @@ class TradingAgents:
         trend_report = self._call_llm(trend_model, [
             {"role": "system", "content": trend_system},
             {"role": "user", "content": trend_user}
-        ], json_response=False, fallbacks=self._get_fallbacks(trend_model))
+        ], json_response=False, category="management")
         logging.info(f"รายงานเทรนหลัก: {trend_report}")
 
         # --- Agent 2: Price Action Analyst Agent (LLM) ---
@@ -325,7 +388,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         pa_report = self._call_llm(pa_model, [
             {"role": "system", "content": pa_system},
             {"role": "user", "content": pa_user}
-        ], json_response=False, fallbacks=self._get_fallbacks(pa_model))
+        ], json_response=False, category="analysis")
         logging.info(f"รายงานพฤติกรรมราคา PA: {pa_report}")
 
         # --- Agent 5: Scalp Master / CIO Consensus (LLM) ---
@@ -367,14 +430,10 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 จงสรุปคำสั่งตัดสินใจสุดท้ายในรูปแบบ JSON:"""
 
         logging.info("กำลังเรียกใช้ Scalp Master Agent เพื่อหาข้อสรุปการยิงออเดอร์...")
-        
-        # เลือก fallback อัตโนมัติตามพูลโมเดลเพื่อป้องกันข้อผิดพลาด 409 (ข้ามพูล)
-        fallbacks = self._get_fallbacks(cio_model)
-            
         final_decision = self._call_llm(cio_model, [
             {"role": "system", "content": cio_system},
             {"role": "user", "content": cio_user}
-        ], json_response=True, fallbacks=fallbacks)
+        ], json_response=True, category="analysis")
         
         logging.info(f"มติการตัดสินใจสุดท้ายของ Scalp Master: {final_decision}")
         return final_decision
@@ -384,9 +443,6 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         Agent ตัวที่ 2: Manager Agent (วิเคราะห์และควบคุมความเสี่ยงของออเดอร์ที่ค้างอยู่)
         """
         model = self.management_model
-        
-        # เลือก fallback อัตโนมัติตามพูลโมเดลเพื่อป้องกันข้อผิดพลาด 409 (ข้ามพูล)
-        fallbacks = self._get_fallbacks(model)
         
         system_prompt = f"""คุณคือ Risk Manager หน้าที่ของคุณคือควบคุมความเสี่ยงของออเดอร์ {symbol} ที่เปิดอยู่
 วิเคราะห์ระดับราคาปัจจุบันเทียบกับออเดอร์ที่คุณถืออยู่ เพื่อตัดสินใจว่าจะทำอย่างไรกับออเดอร์นี้
@@ -418,14 +474,13 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ]
         
         logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol} ด้วยโมเดล {model}...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=fallbacks)
+        return self._call_llm(model, messages, json_response=True, category="management")
 
     def analyze_market_regime(self, df_5m, df_15m, df_1h, symbol="XAUUSD"):
         """
         Market Regime Agent (วิเคราะห์จำแนกสภาวะตลาดหลัก)
         """
         model = self.analysis_model
-        fallbacks = self._get_fallbacks(model)
         
         df_5m_pa = self._analyze_price_action(df_5m)
         df_15m_pa = self._analyze_price_action(df_15m)
@@ -472,14 +527,13 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ]
         
         logging.info("กำลังเรียกใช้ Market Regime Agent...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=fallbacks)
+        return self._call_llm(model, messages, json_response=True, category="analysis")
 
     def review_order(self, proposed_order, regime, trend_report, pa_report, symbol="XAUUSD"):
         """
         Reviewer Agent (ผู้ตรวจทานออเดอร์ก่อนส่งคำสั่งไปยังโบรกเกอร์)
         """
         model = self.management_model
-        fallbacks = self._get_fallbacks(model)
         
         system_prompt = f"""คุณคือ Reviewer Agent หน้าที่ของคุณคือการทำ Double-Check และรีวิวออเดอร์ของ {symbol} ที่นักวิเคราะห์เสนอมา
 ตรวจสอบความสมเหตุสมผลและความขัดแย้งของแผนการเทรด:
@@ -518,7 +572,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ]
         
         logging.info("กำลังเรียกใช้ Reviewer Agent เพื่อตรวจทานออเดอร์สุดท้าย...")
-        return self._call_llm(model, messages, json_response=True, fallbacks=fallbacks)
+        return self._call_llm(model, messages, json_response=True, category="management")
 
     def _format_reflection(self, performance_stats, trade_history):
         reflection_context = ""
@@ -559,7 +613,6 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30
         """
         model = self.analysis_model
-        fallbacks = self._get_fallbacks(model)
         
         df_1m_pa = self._analyze_price_action(df_1m)
         df_5m_pa = self._analyze_price_action(df_5m)
@@ -593,7 +646,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         trend_report = self._call_llm(self.management_model, [
             {"role": "system", "content": trend_system},
             {"role": "user", "content": trend_user}
-        ], json_response=False, fallbacks=self._get_fallbacks(self.management_model))
+        ], json_response=False, category="management")
         
         # Sub-agent 2: Price Action Sniper
         pa_system = f"""คุณคือ Price Action Sniper ทำหน้าที่ตรวจสอบแท่งเทียนช่วง 1m และ 5m หาจุด Rejection wick, Engulfing หรือ Breakout ของ {symbol}
@@ -610,7 +663,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         pa_report = self._call_llm(model, [
             {"role": "system", "content": pa_system},
             {"role": "user", "content": pa_user}
-        ], json_response=False, fallbacks=fallbacks)
+        ], json_response=False, category="analysis")
         
         # CIO consensus Scalp Master
         cio_system = f"""คุณคือ Scalp Master / CIO Consensus ของกองทุนเทรดสั้น
@@ -643,7 +696,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         proposal = self._call_llm(model, [
             {"role": "system", "content": cio_system},
             {"role": "user", "content": cio_user}
-        ], json_response=True, fallbacks=fallbacks)
+        ], json_response=True, category="analysis")
         
         # เรียก Reviewer ตรวจทานออเดอร์สุดท้ายเพื่อความปลอดภัยสูงสุด
         final_decision = self.review_order(proposal, regime_report, trend_report, pa_report, symbol)
@@ -654,7 +707,6 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         2) Day Trading Agent: Intraday trading, holds positions only within the day
         """
         model = self.analysis_model
-        fallbacks = self._get_fallbacks(model)
         
         df_15m_pa = self._analyze_price_action(df_15m)
         df_1h_pa = self._analyze_price_action(df_1h)
@@ -690,7 +742,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         trend_report = self._call_llm(self.management_model, [
             {"role": "system", "content": trend_system},
             {"role": "user", "content": trend_user}
-        ], json_response=False, fallbacks=self._get_fallbacks(self.management_model))
+        ], json_response=False, category="management")
         
         # Sub-agent 2: Range Guard
         range_system = f"""คุณคือ Range Guard หน้าที่ของคุณคือตรวจสอบกรอบการสวิงของราคาวันนี้
@@ -707,7 +759,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         range_report = self._call_llm(model, [
             {"role": "system", "content": range_system},
             {"role": "user", "content": range_user}
-        ], json_response=False, fallbacks=fallbacks)
+        ], json_response=False, category="analysis")
         
         # CIO Day Trade Master
         cio_system = f"""คุณคือ Day Trade Master / CIO Consensus ของกองทุนเทรดรายวัน
@@ -740,7 +792,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         proposal = self._call_llm(model, [
             {"role": "system", "content": cio_system},
             {"role": "user", "content": cio_user}
-        ], json_response=True, fallbacks=fallbacks)
+        ], json_response=True, category="analysis")
         
         final_decision = self.review_order(proposal, regime_report, trend_report, range_report, symbol)
         return final_decision
@@ -750,7 +802,6 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         3) Swing Trading Agent: Holds positions for days to weeks, capturing large structural moves
         """
         model = self.analysis_model
-        fallbacks = self._get_fallbacks(model)
         
         df_4h_pa = self._analyze_price_action(df_4h)
         df_1d_pa = self._analyze_price_action(df_1d)
@@ -786,7 +837,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         trend_report = self._call_llm(self.management_model, [
             {"role": "system", "content": trend_system},
             {"role": "user", "content": trend_user}
-        ], json_response=False, fallbacks=self._get_fallbacks(self.management_model))
+        ], json_response=False, category="management")
         
         # Sub-agent 2: Fundamental Catalyst Guard
         fundamental_system = f"""คุณคือ Fundamental Catalyst Guard ทำหน้าที่วิเคราะห์ข่าวใหญ่ระดับมหภาคและดอกเบี้ยนโยบาย
@@ -802,7 +853,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         fundamental_report = self._call_llm(model, [
             {"role": "system", "content": fundamental_system},
             {"role": "user", "content": fundamental_user}
-        ], json_response=False, fallbacks=fallbacks)
+        ], json_response=False, category="analysis")
         
         # CIO Swing Master
         cio_system = f"""คุณคือ Swing Master / CIO Consensus ของกองทุนเทรดสวิงระยะยาว
@@ -835,7 +886,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         proposal = self._call_llm(model, [
             {"role": "system", "content": cio_system},
             {"role": "user", "content": cio_user}
-        ], json_response=True, fallbacks=fallbacks)
+        ], json_response=True, category="analysis")
         
         final_decision = self.review_order(proposal, regime_report, trend_report, fundamental_report, symbol)
         return final_decision
