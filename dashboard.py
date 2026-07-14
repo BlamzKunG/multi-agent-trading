@@ -66,15 +66,14 @@ def load_config():
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
                 dashboard_config.update(loaded)
-            # ซิงค์ค่าล็อตสูงสุดและตั้งค่า Trailing Stop ให้บอท
-            for bot in [bot_sim, bot_mt5]:
-                bot.max_lot = float(dashboard_config.get("max_lot", 0.01))
-                bot.trailing_activation_mult = float(dashboard_config.get("trailing_activation_mult", 1.5))
-                bot.trailing_distance_mult = float(dashboard_config.get("trailing_distance_mult", 1.5))
-                bot.trailing_step_mult = float(dashboard_config.get("trailing_step_mult", 0.3))
-                bot.trailing_atr_tf = dashboard_config.get("trailing_atr_tf", "5m")
-                bot.agents.analysis_model = dashboard_config.get("analysis_model", "gpt-5.5")
-                bot.agents.management_model = dashboard_config.get("management_model", "gpt-5.4-mini")
+            # ซิงค์ค่าล็อตสูงสุดให้บอท
+            bot_sim.max_lot = float(dashboard_config.get("max_lot", 0.01))
+            bot_mt5.max_lot = float(dashboard_config.get("max_lot", 0.01))
+            # ซิงค์โมเดลให้บอท
+            bot_sim.agents.analysis_model = dashboard_config.get("analysis_model", "gpt-5.5")
+            bot_mt5.agents.analysis_model = dashboard_config.get("analysis_model", "gpt-5.5")
+            bot_sim.agents.management_model = dashboard_config.get("management_model", "gpt-5.4-mini")
+            bot_mt5.agents.management_model = dashboard_config.get("management_model", "gpt-5.4-mini")
         except Exception as e:
             logging.error(f"โหลดไฟล์ตั้งค่าล้มเหลว: {e}")
 
@@ -210,11 +209,7 @@ def get_status():
                 "auto_pilot": dashboard_config["auto_pilot"],
                 "interval_minutes": dashboard_config["interval_minutes"],
                 "analysis_model": dashboard_config.get("analysis_model", "gpt-5.5"),
-                "management_model": dashboard_config.get("management_model", "gpt-5.4-mini"),
-                "trailing_atr_tf": dashboard_config.get("trailing_atr_tf", "5m"),
-                "trailing_activation_mult": dashboard_config.get("trailing_activation_mult", 1.5),
-                "trailing_distance_mult": dashboard_config.get("trailing_distance_mult", 1.5),
-                "trailing_step_mult": dashboard_config.get("trailing_step_mult", 0.3)
+                "management_model": dashboard_config.get("management_model", "gpt-5.4-mini")
             })
             
         else:
@@ -241,10 +236,6 @@ def get_status():
                     "interval_minutes": dashboard_config["interval_minutes"],
                     "analysis_model": dashboard_config.get("analysis_model", "gpt-5.5"),
                     "management_model": dashboard_config.get("management_model", "gpt-5.4-mini"),
-                    "trailing_atr_tf": dashboard_config.get("trailing_atr_tf", "5m"),
-                    "trailing_activation_mult": dashboard_config.get("trailing_activation_mult", 1.5),
-                    "trailing_distance_mult": dashboard_config.get("trailing_distance_mult", 1.5),
-                    "trailing_step_mult": dashboard_config.get("trailing_step_mult", 0.3),
                     "message": "ไม่สามารถเชื่อมต่อโปรแกรม MT5 Terminal ได้"
                 })
                 
@@ -267,11 +258,7 @@ def get_status():
                 "auto_pilot": dashboard_config["auto_pilot"],
                 "interval_minutes": dashboard_config["interval_minutes"],
                 "analysis_model": dashboard_config.get("analysis_model", "gpt-5.5"),
-                "management_model": dashboard_config.get("management_model", "gpt-5.4-mini"),
-                "trailing_atr_tf": dashboard_config.get("trailing_atr_tf", "5m"),
-                "trailing_activation_mult": dashboard_config.get("trailing_activation_mult", 1.5),
-                "trailing_distance_mult": dashboard_config.get("trailing_distance_mult", 1.5),
-                "trailing_step_mult": dashboard_config.get("trailing_step_mult", 0.3)
+                "management_model": dashboard_config.get("management_model", "gpt-5.4-mini")
             })
             
     except Exception as e:
@@ -353,35 +340,26 @@ def update_config():
     analysis_model = req_data.get("analysis_model", "gpt-5.5")
     management_model = req_data.get("management_model", "gpt-5.4-mini")
     
-    trailing_activation_mult = float(req_data.get("trailing_activation_mult", 1.5))
-    trailing_distance_mult = float(req_data.get("trailing_distance_mult", 1.5))
-    trailing_step_mult = float(req_data.get("trailing_step_mult", 0.3))
-    trailing_atr_tf = req_data.get("trailing_atr_tf", "5m")
-    
     dashboard_config["mode"] = mode
     dashboard_config["max_lot"] = max_lot
     dashboard_config["auto_pilot"] = auto_pilot
     dashboard_config["interval_minutes"] = interval_minutes
     dashboard_config["analysis_model"] = analysis_model
     dashboard_config["management_model"] = management_model
-    dashboard_config["trailing_activation_mult"] = trailing_activation_mult
-    dashboard_config["trailing_distance_mult"] = trailing_distance_mult
-    dashboard_config["trailing_step_mult"] = trailing_step_mult
-    dashboard_config["trailing_atr_tf"] = trailing_atr_tf
     
-    # อัปเดตบอททั้งสองตัว
-    for bot in [bot_sim, bot_mt5]:
-        bot.max_lot = max_lot
-        bot.trailing_activation_mult = trailing_activation_mult
-        bot.trailing_distance_mult = trailing_distance_mult
-        bot.trailing_step_mult = trailing_step_mult
-        bot.trailing_atr_tf = trailing_atr_tf
-        bot.agents.analysis_model = analysis_model
-        bot.agents.management_model = management_model
+    # อัปเดตล็อตบอท
+    bot_sim.max_lot = max_lot
+    bot_mt5.max_lot = max_lot
+    
+    # อัปเดตโมเดลบอท
+    bot_sim.agents.analysis_model = analysis_model
+    bot_mt5.agents.analysis_model = analysis_model
+    bot_sim.agents.management_model = management_model
+    bot_mt5.agents.management_model = management_model
     
     save_config_file()
     
-    logging.info(f"💾 บันทึกการตั้งค่าบอท: โหมด={mode.upper()} | ล็อตสูงสุด={max_lot} | Auto-Pilot={auto_pilot} | รอบ={interval_minutes} นาที | ATR TF={trailing_atr_tf} | Activation={trailing_activation_mult} | Distance={trailing_distance_mult} | Step={trailing_step_mult}")
+    logging.info(f"💾 บันทึกการตั้งค่าบอท: โหมด={mode.upper()} | ล็อตสูงสุด={max_lot} | Auto-Pilot={auto_pilot} | รอบ={interval_minutes} นาที | วิเคราะห์={analysis_model} | จัดการ={management_model}")
     return jsonify({"status": "SUCCESS"})
 
 @app.route('/api/history', methods=['GET'])

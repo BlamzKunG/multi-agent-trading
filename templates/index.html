@@ -665,34 +665,6 @@
                                 <option value="60">ทุก 1 ชั่วโมง</option>
                             </select>
                         </div>
-
-                        <!-- ATR Trailing Stop Config -->
-                        <div class="form-group" style="margin-top: 0.5rem; border-top: 1px solid var(--border-color); padding-top: 0.8rem;">
-                            <label style="font-weight: bold; color: var(--accent-blue);"><i class="fa-solid fa-gauge-high"></i> ATR Trailing Stop Config</label>
-                        </div>
-                        <div class="form-group">
-                            <label for="configAtrTf">ATR Timeframe</label>
-                            <select id="configAtrTf">
-                                <option value="1m">1 นาที (1m)</option>
-                                <option value="5m">5 นาที (5m)</option>
-                                <option value="15m">15 นาที (15m)</option>
-                                <option value="1h">1 ชั่วโมง (1h)</option>
-                            </select>
-                        </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem;">
-                            <div class="form-group">
-                                <label for="configActivationMult" style="font-size: 0.75rem;">Activation Mult</label>
-                                <input type="number" id="configActivationMult" step="0.1" min="0.1" value="1.5">
-                            </div>
-                            <div class="form-group">
-                                <label for="configDistanceMult" style="font-size: 0.75rem;">Distance Mult</label>
-                                <input type="number" id="configDistanceMult" step="0.1" min="0.1" value="1.5">
-                            </div>
-                            <div class="form-group">
-                                <label for="configStepMult" style="font-size: 0.75rem;">Step Mult</label>
-                                <input type="number" id="configStepMult" step="0.1" min="0.1" value="0.3">
-                            </div>
-                        </div>
                         
                         <button type="submit" class="btn btn-secondary">
                             <i class="fa-solid fa-floppy-disk"></i> Save Configuration
@@ -969,12 +941,6 @@
                 document.getElementById('configAutoPilot').checked = data.auto_pilot;
                 document.getElementById('configInterval').value = data.interval_minutes;
                 
-                // Load Trailing Stop configurations
-                if (data.trailing_atr_tf) document.getElementById('configAtrTf').value = data.trailing_atr_tf;
-                if (data.trailing_activation_mult) document.getElementById('configActivationMult').value = data.trailing_activation_mult;
-                if (data.trailing_distance_mult) document.getElementById('configDistanceMult').value = data.trailing_distance_mult;
-                if (data.trailing_step_mult) document.getElementById('configStepMult').value = data.trailing_step_mult;
-                
                 toggleSchedulerUI();
                 
             } catch (err) {
@@ -1126,30 +1092,16 @@
             const auto_pilot = document.getElementById('configAutoPilot').checked;
             const interval_minutes = document.getElementById('configInterval').value;
             
-            const trailing_atr_tf = document.getElementById('configAtrTf').value;
-            const trailing_activation_mult = parseFloat(document.getElementById('configActivationMult').value) || 1.5;
-            const trailing_distance_mult = parseFloat(document.getElementById('configDistanceMult').value) || 1.5;
-            const trailing_step_mult = parseFloat(document.getElementById('configStepMult').value) || 0.3;
-            
             try {
                 const response = await fetch('/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        mode, 
-                        max_lot, 
-                        auto_pilot, 
-                        interval_minutes,
-                        trailing_atr_tf,
-                        trailing_activation_mult,
-                        trailing_distance_mult,
-                        trailing_step_mult
-                    })
+                    body: JSON.stringify({ mode, max_lot, auto_pilot, interval_minutes })
                 });
                 const result = await response.json();
                 if (result.status === 'SUCCESS') {
                     const statusText = auto_pilot ? `เปิดรันออโต้รอบละ ${interval_minutes} นาที` : 'ปิดรันออโต้';
-                    appendTerminal('SUCCESS', `บันทึกการตั้งค่าสำเร็จ! โหมด: ${mode.toUpperCase()} (จำกัดล็อต ${max_lot}, Auto-Pilot: ${statusText})`);
+                    appendTerminal('SUCCESS', `บันทึกการตั้งค่าสำเร็จ! โหมด: ${mode.upper()} (จำกัดล็อต ${max_lot}, Auto-Pilot: ${statusText})`);
                     fetchStatus();
                     fetchHistory();
                     fetchEquityChart();
