@@ -126,8 +126,8 @@ class TradingBotGUI:
         # กำหนดตัวแปรกราฟิก
         self.var_mode = tk.StringVar(value="Simulation")
         self.var_auto_pilot = tk.BooleanVar(value=False)
-        self.var_analysis_model = tk.StringVar(value="claude-sonnet-5 (Native: $3.00/1M)")
-        self.var_management_model = tk.StringVar(value="claude-haiku-4-5-20251001 (Native: $0.25/1M)")
+        self.var_analysis_model = tk.StringVar(value="claude-haiku-4-5 (Native: $0.25/1M)")
+        self.var_management_model = tk.StringVar(value="claude-haiku-4-5 (Native: $0.25/1M)")
         
         # ตัวแปรแยกกลยุทธ์
         self.strat_vars = {
@@ -325,6 +325,8 @@ class TradingBotGUI:
         # 4. เลือกโมเดลสำหรับ Analyst และ Manager
         tk.Label(self.tab_global, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
         self.cb_analysis_model = ttk.Combobox(self.tab_global, textvariable=self.var_analysis_model, values=[
+            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
+            "claude-haiku-4-5 (Native: $0.25/1M)",
             "claude-sonnet-4-6 (Native: $3.00/1M)",
             "claude-sonnet-5 (Native: $3.00/1M)",
             "claude-opus-4-6",

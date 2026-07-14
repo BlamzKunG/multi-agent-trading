@@ -12,7 +12,7 @@ class TradingAgents:
     ระบบตัวแทนอัจฉริยะ (Multi-Agent Trading System)
     ทำหน้าที่วิเคราะห์กราฟและบริหารความเสี่ยงด้วยโมเดลภาษาผ่าน MaxPlus AI API
     """
-    def __init__(self, api_key, base_url="https://api.maxplus-ai.cc/v1", analysis_model="claude-sonnet-5", management_model="claude-haiku-4-5-20251001"):
+    def __init__(self, api_key, base_url="https://api.maxplus-ai.cc/v1", analysis_model="claude-haiku-4-5", management_model="claude-haiku-4-5"):
         self.api_key = api_key
         self.base_url = base_url
         self.headers = {
@@ -24,6 +24,8 @@ class TradingAgents:
         
         # รายการโมเดลที่ใช้งานได้ เรียงลำดับจากราคาถูกสุดไปแพงสุด (ตาม API Key ของผู้ใช้ที่รองรับเฉพาะตระกูล Claude)
         self.analysis_models_catalog = [
+            "claude-haiku-4-5-20251001",
+            "claude-haiku-4-5",
             "claude-sonnet-4-6",
             "claude-sonnet-5",
             "claude-opus-4-6",
