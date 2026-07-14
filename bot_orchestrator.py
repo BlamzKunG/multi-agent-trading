@@ -21,6 +21,13 @@ class TradingBotOrchestrator:
         # 3. โหลดโมดูล Agent
         self.agents = TradingAgents(api_key=api_key)
         self.symbol = "XAUUSD"
+        # 4. ค่าตั้งค่า Trailing Stop และระบบประหยัด Token
+        self.trailing_activation_mult = 1.5
+        self.trailing_distance_mult = 1.5
+        self.trailing_step_mult = 0.3
+        self.trailing_atr_tf = "5m"
+        self.hold_minutes = 5
+        self.next_run_time = 0
 
     def send_discord_message(self, message):
         """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
@@ -167,10 +174,18 @@ class TradingBotOrchestrator:
         self.exchange.update_price(current_price)
         status = self.exchange.get_status()
         
-        logging.info(f"ราคาตลาดปัจจุบันสำหรับ {self.symbol}: {current_price} USD | Equity: ${status['equity']:.2f} | Balance: ${status['balance']:.2f}")
-        
         # 3. ตรวจสอบสถานะพอร์ต
         open_positions = status['open_positions']
+        
+        # หากไม่มีออเดอร์ค้าง และยังไม่พ้นระยะ Hold ให้ข้ามรอบทำงาน (เพื่อประหยัด Token)
+        if not open_positions:
+            now = time.time()
+            if now < getattr(self, 'next_run_time', 0):
+                remaining_sec = self.next_run_time - now
+                logging.info(f"⏳ [Hold Active] สภาพตลาดปัจจุบันอยู่ในช่วงพักวิเคราะห์ (Hold) เพื่อประหยัด Token เหลืออีก {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
+                return
+                
+        logging.info(f"ราคาตลาดปัจจุบันสำหรับ {self.symbol}: {current_price} USD | Equity: ${status['equity']:.2f} | Balance: ${status['balance']:.2f}")
         
         if not open_positions:
             # ----------------------------------------------------
@@ -232,11 +247,19 @@ class TradingBotOrchestrator:
                 )
                 self.send_discord_message(msg)
             else:
-                logging.info("AI ตัดสินใจให้รอดูสถานการณ์ไปก่อน (HOLD)")
+                # บันทึกเวลาที่จะต้องพักวิเคราะห์ (Hold) เพื่อประหยัด Token
+                hold_min = int(decision.get("hold_minutes") or 5)
+                if hold_min not in [5, 10, 15, 30]:
+                    hold_min = 5
+                self.hold_minutes = hold_min
+                self.next_run_time = time.time() + (hold_min * 60)
+                
+                logging.info(f"AI ตัดสินใจให้รอดูสถานการณ์ไปก่อน (HOLD) | พักวิเคราะห์ชั่วคราว {hold_min} นาที (จะวิเคราะห์ใหม่ตอน: {datetime.fromtimestamp(self.next_run_time).strftime('%H:%M:%S')})")
                 # ส่งแจ้งเตือน Discord สำหรับ HOLD
                 msg = (
                     f"🟡 **[Sim Mode - Analyst Alert]**\n"
                     f"**Asset:** {self.symbol} | **Action:** HOLD (รอดูสัญญาณ)\n"
+                    f"**Hold Duration:** พักวิเคราะห์ {hold_min} นาที\n"
                     f"**Reason:** {reason}"
                 )
                 self.send_discord_message(msg)
@@ -247,18 +270,22 @@ class TradingBotOrchestrator:
             # ----------------------------------------------------
             logging.info(f"สถานะพอร์ต: มีออเดอร์ค้างอยู่ {len(open_positions)} ไม้")
             
-            # ดึงข้อมูลราคาย้อนหลังเพื่อคำนวณ ATR
-            df_5m = self.data_feed.get_historical_data(interval="5m", period="1d")
-            df_5m_anal = self.data_feed.analyze_price_action(df_5m)
+            # ดึงข้อมูลราคาย้อนหลังเพื่อคำนวณ ATR ตามกรอบเวลาที่ตั้งค่าไว้
+            tf = getattr(self, 'trailing_atr_tf', '5m')
+            period_map = {"1m": "1d", "5m": "1d", "15m": "2d", "1h": "5d"}
+            period = period_map.get(tf, "1d")
             
-            if not df_5m_anal.empty and 'atr_14' in df_5m_anal.columns:
-                atr = float(df_5m_anal['atr_14'].iloc[-1])
+            df_hist = self.data_feed.get_historical_data(interval=tf, period=period)
+            df_hist_anal = self.data_feed.analyze_price_action(df_hist)
+            
+            if not df_hist_anal.empty and 'atr_14' in df_hist_anal.columns:
+                atr = float(df_hist_anal['atr_14'].iloc[-1])
             else:
                 atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
                 
-            activation_dist = atr * 1.5
-            trail_dist = atr * 1.5
-            trail_step = atr * 0.3
+            activation_dist = atr * getattr(self, 'trailing_activation_mult', 1.5)
+            trail_dist = atr * getattr(self, 'trailing_distance_mult', 1.5)
+            trail_step = atr * getattr(self, 'trailing_step_mult', 0.3)
             
             logging.info(f"📊 [ATR Trailing Config] ATR: {atr:.2f} | Activation: {activation_dist:.2f} | Trail Dist: {trail_dist:.2f} | Trail Step: {trail_step:.2f}")
             

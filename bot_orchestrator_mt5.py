@@ -21,6 +21,13 @@ class MT5TradingBotOrchestrator:
         # 3. โหลดโมดูลประมวลผลข้อมูลราคาเพื่อคำนวณอินดิเคเตอร์เชิงเทคนิค
         self.data_feed = GoldDataFeed()
         self.symbol = "XAUUSD"
+        # 4. ค่าตั้งค่า Trailing Stop และระบบประหยัด Token
+        self.trailing_activation_mult = 1.5
+        self.trailing_distance_mult = 1.5
+        self.trailing_step_mult = 0.3
+        self.trailing_atr_tf = "5m"
+        self.hold_minutes = 5
+        self.next_run_time = 0
 
     def send_discord_message(self, message):
         """ส่งข้อความแจ้งเตือนไปยัง Discord Webhook"""
@@ -175,6 +182,14 @@ class MT5TradingBotOrchestrator:
         open_positions = self.mt5_bridge.get_open_positions(self.symbol)
         pending_orders = self.mt5_bridge.get_pending_orders(self.symbol)
         
+        # หากไม่มีออเดอร์ค้าง และยังไม่พ้นระยะ Hold ให้ข้ามรอบทำงาน (เพื่อประหยัด Token)
+        if not open_positions and not pending_orders:
+            now = time.time()
+            if now < getattr(self, 'next_run_time', 0):
+                remaining_sec = self.next_run_time - now
+                logging.info(f"⏳ [MT5 Hold Active] สภาพตลาดปัจจุบันอยู่ในช่วงพักวิเคราะห์ (Hold) เพื่อประหยัด Token เหลืออีก {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
+                return
+                
         if not open_positions and not pending_orders:
             # ----------------------------------------------------
             # 📌 สาขา A: พอร์ตว่างสนิท -> วิเคราะห์หาจุดเปิดออเดอร์ใหม่ (Market หรือ Pending)
@@ -240,11 +255,19 @@ class MT5TradingBotOrchestrator:
                 )
                 self.send_discord_message(msg)
             else:
-                logging.info("AI ประเมินว่ายังไม่ควรกระทำการใดๆ ให้รอดูสัญญาณต่อไป (HOLD)")
+                # บันทึกเวลาที่จะต้องพักวิเคราะห์ (Hold) เพื่อประหยัด Token
+                hold_min = int(decision.get("hold_minutes") or 5)
+                if hold_min not in [5, 10, 15, 30]:
+                    hold_min = 5
+                self.hold_minutes = hold_min
+                self.next_run_time = time.time() + (hold_min * 60)
+                
+                logging.info(f"AI ประเมินว่ายังไม่ควรกระทำการใดๆ ให้รอดูสัญญาณต่อไป (HOLD) | พักวิเคราะห์ชั่วคราว {hold_min} นาที (จะวิเคราะห์ใหม่ตอน: {datetime.fromtimestamp(self.next_run_time).strftime('%H:%M:%S')})")
                 # ส่งแจ้งเตือน Discord สำหรับ HOLD
                 msg = (
                     f"🟡 **[MT5 Live - Analyst Alert]**\n"
                     f"**Asset:** {self.symbol} | **Action:** HOLD (รอดูสัญญาณ)\n"
+                    f"**Hold Duration:** พักวิเคราะห์ {hold_min} นาที\n"
                     f"**Reason:** {reason}"
                 )
                 self.send_discord_message(msg)
@@ -296,18 +319,19 @@ class MT5TradingBotOrchestrator:
             # ----------------------------------------------------
             logging.info(f"มีออเดอร์ค้างอยู่ (Active Position) ทั้งหมด {len(open_positions)} ไม้")
             
-            # ดึงประวัติย้อนหลัง 5m เพื่อคำนวณ ATR ปัจจุบัน
-            df_5m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="5m", num_candles=100)
-            df_5m_anal = self.data_feed.analyze_price_action(df_5m)
+            # ดึงประวัติย้อนหลังตามกรอบเวลาที่ตั้งค่าเพื่อคำนวณ ATR ปัจจุบัน
+            tf = getattr(self, 'trailing_atr_tf', '5m')
+            df_hist = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe=tf, num_candles=100)
+            df_hist_anal = self.data_feed.analyze_price_action(df_hist)
             
-            if not df_5m_anal.empty and 'atr_14' in df_5m_anal.columns:
-                atr = float(df_5m_anal['atr_14'].iloc[-1])
+            if not df_hist_anal.empty and 'atr_14' in df_hist_anal.columns:
+                atr = float(df_hist_anal['atr_14'].iloc[-1])
             else:
                 atr = 1.50 if "XAU" in self.symbol.upper() else 50.0
                 
-            activation_dist = atr * 1.5
-            trail_dist = atr * 1.5
-            trail_step = atr * 0.3
+            activation_dist = atr * getattr(self, 'trailing_activation_mult', 1.5)
+            trail_dist = atr * getattr(self, 'trailing_distance_mult', 1.5)
+            trail_step = atr * getattr(self, 'trailing_step_mult', 0.3)
             
             logging.info(f"📊 [MT5 ATR Trailing Config] ATR: {atr:.2f} | Activation: {activation_dist:.2f} | Trail Dist: {trail_dist:.2f} | Trail Step: {trail_step:.2f}")
             

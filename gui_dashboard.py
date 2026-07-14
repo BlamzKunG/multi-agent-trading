@@ -100,6 +100,8 @@ class TradingBotGUI:
         # สร้างตัวแปรเก็บค่าต่างๆ ของระบบควบคุม
         self.var_mode = tk.StringVar(value="Simulation")
         self.var_auto_pilot = tk.BooleanVar(value=False)
+        self.var_analysis_model = tk.StringVar(value="gpt-5.5 (Native: $3.00/1M)")
+        self.var_management_model = tk.StringVar(value="gpt-5.4-mini (Native: $2.25/1M)")
         
         self.setup_ui()
         self.setup_logging()
@@ -165,9 +167,59 @@ class TradingBotGUI:
         self.ent_interval.pack(fill="x", pady=(2, 10))
         self.ent_interval.insert(0, "5")
         
+        # 6.5. เลือกโมเดลสำหรับ Analyst และ Manager พร้อมบอกราคา
+        tk.Label(self.left_panel, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.cb_analysis_model = ttk.Combobox(self.left_panel, textvariable=self.var_analysis_model, values=[
+            "gpt-5.5 (Native: $3.00/1M)",
+            "claude-sonnet-4-6 (Native: $3.00/1M)",
+            "deepseek-v4-pro (DeepSeek: $0.14/1M)",
+            "claude-opus-4-8 (Native: $15.00/1M)"
+        ], state="readonly")
+        self.cb_analysis_model.pack(fill="x", pady=(2, 10))
+        
+        tk.Label(self.left_panel, text="Manager Model (โมเดลควบคุมพอร์ต)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.cb_management_model = ttk.Combobox(self.left_panel, textvariable=self.var_management_model, values=[
+            "gpt-5.4-mini (Native: $2.25/1M)",
+            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
+            "deepseek-v4-flash (DeepSeek: $0.07/1M)"
+        ], state="readonly")
+        self.cb_management_model.pack(fill="x", pady=(2, 10))
+
+        # 6.6. ตั้งค่า ATR Trailing Stop (แสดงเป็นกลุ่มช่องกรอกขนาดกะทัดรัด)
+        self.frame_trailing = tk.LabelFrame(self.left_panel, text="⚙️ ตั้งค่า ATR Trailing Stop", font=self.font_label, bg="#1e293b", fg="#10b981", padx=10, pady=5, relief="solid", bd=1)
+        self.frame_trailing.pack(fill="x", pady=(0, 10))
+        
+        # Grid config: 2 columns
+        self.frame_trailing.columnconfigure(0, weight=1)
+        self.frame_trailing.columnconfigure(1, weight=1)
+        
+        # Row 0: TF of ATR
+        tk.Label(self.frame_trailing, text="ATR Timeframe", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=0, column=0, sticky="w", pady=2)
+        self.cb_atr_tf = ttk.Combobox(self.frame_trailing, values=["1m", "5m", "15m", "1h"], width=8, state="readonly")
+        self.cb_atr_tf.grid(row=0, column=1, sticky="ew", pady=2)
+        self.cb_atr_tf.set("5m")
+        
+        # Row 1: Activation Mult
+        tk.Label(self.frame_trailing, text="Activation Mult", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=1, column=0, sticky="w", pady=2)
+        self.ent_activation_mult = tk.Entry(self.frame_trailing, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2, width=8)
+        self.ent_activation_mult.grid(row=1, column=1, sticky="ew", pady=2)
+        self.ent_activation_mult.insert(0, "1.5")
+        
+        # Row 2: Distance Mult
+        tk.Label(self.frame_trailing, text="Distance Mult", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=2, column=0, sticky="w", pady=2)
+        self.ent_distance_mult = tk.Entry(self.frame_trailing, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2, width=8)
+        self.ent_distance_mult.grid(row=2, column=1, sticky="ew", pady=2)
+        self.ent_distance_mult.insert(0, "1.5")
+        
+        # Row 3: Step Mult
+        tk.Label(self.frame_trailing, text="Step Mult", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").grid(row=3, column=0, sticky="w", pady=2)
+        self.ent_step_mult = tk.Entry(self.frame_trailing, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2, width=8)
+        self.ent_step_mult.grid(row=3, column=1, sticky="ew", pady=2)
+        self.ent_step_mult.insert(0, "0.3")
+        
         # 7. ปรับสวิตช์ Auto-Pilot
         self.chk_auto = tk.Checkbutton(self.left_panel, text="⚙️ เปิดใช้ระบบ Auto-Pilot (รันออโต้)", variable=self.var_auto_pilot, font=self.font_label, bg="#1e293b", fg="#818cf8", selectcolor="#0f172a", activebackground="#1e293b", activeforeground="#818cf8", command=self.on_auto_pilot_toggle)
-        self.chk_auto.pack(anchor="w", pady=(5, 15))
+        self.chk_auto.pack(anchor="w", pady=(5, 10))
         
         # 8. ปุ่มหลักในการเซฟการตั้งค่าและยิงระบบแมนนวล
         btn_save = tk.Button(self.left_panel, text="💾 Save Configuration", font=self.font_label, bg="#818cf8", fg="#0f172a", activebackground="#f472b6", relief="flat", height=2, command=self.save_config)
@@ -345,6 +397,18 @@ class TradingBotGUI:
                 self.ent_mt5_server.delete(0, 'end')
                 self.ent_mt5_server.insert(0, str(cfg.get("mt5_server", "")))
                 
+                self.var_analysis_model.set(cfg.get("analysis_model", "gpt-5.5 (Native: $3.00/1M)"))
+                self.var_management_model.set(cfg.get("management_model", "gpt-5.4-mini (Native: $2.25/1M)"))
+                
+                # โหลดค่าตั้งค่า Trailing
+                self.cb_atr_tf.set(cfg.get("trailing_atr_tf", "5m"))
+                self.ent_activation_mult.delete(0, 'end')
+                self.ent_activation_mult.insert(0, str(cfg.get("trailing_activation_mult", 1.5)))
+                self.ent_distance_mult.delete(0, 'end')
+                self.ent_distance_mult.insert(0, str(cfg.get("trailing_distance_mult", 1.5)))
+                self.ent_step_mult.delete(0, 'end')
+                self.ent_step_mult.insert(0, str(cfg.get("trailing_step_mult", 0.3)))
+                
                 # บังคับซิงค์ค่าไปยังบอท
                 self.apply_config_to_bots(cfg)
                 
@@ -362,9 +426,15 @@ class TradingBotGUI:
                 "max_lot": float(self.ent_max_lot.get() or 0.01),
                 "interval_minutes": int(self.ent_interval.get() or 5),
                 "auto_pilot": self.var_auto_pilot.get(),
+                "analysis_model": self.var_analysis_model.get(),
+                "management_model": self.var_management_model.get(),
                 "mt5_login": self.ent_mt5_login.get(),
                 "mt5_pass": self.ent_mt5_pass.get(),
-                "mt5_server": self.ent_mt5_server.get()
+                "mt5_server": self.ent_mt5_server.get(),
+                "trailing_atr_tf": self.cb_atr_tf.get(),
+                "trailing_activation_mult": float(self.ent_activation_mult.get() or 1.5),
+                "trailing_distance_mult": float(self.ent_distance_mult.get() or 1.5),
+                "trailing_step_mult": float(self.ent_step_mult.get() or 0.3)
             }
             
             with open("gui_config.json", "w", encoding="utf-8") as f:
@@ -386,6 +456,14 @@ class TradingBotGUI:
             bot_mt5.agents.api_key = key
             bot_mt5.agents.headers["Authorization"] = f"Bearer {key}"
             
+        # อัปเดตโมเดล AI
+        analysis_model = cfg.get("analysis_model", "gpt-5.5").split()[0]
+        management_model = cfg.get("management_model", "gpt-5.4-mini").split()[0]
+        bot_sim.agents.analysis_model = analysis_model
+        bot_mt5.agents.analysis_model = analysis_model
+        bot_sim.agents.management_model = management_model
+        bot_mt5.agents.management_model = management_model
+            
         # อัปเดตล็อตสูงสุด
         max_lot = float(cfg.get("max_lot", 0.01))
         bot_sim.max_lot = max_lot
@@ -401,6 +479,13 @@ class TradingBotGUI:
             bot_mt5.mt5_bridge.password = pwd
         if srv:
             bot_mt5.mt5_bridge.server = srv
+            
+        # อัปเดตค่าตั้งค่า Trailing Stop และ ATR ให้บอททั้งสองตัว
+        for bot in [bot_sim, bot_mt5]:
+            bot.trailing_activation_mult = float(cfg.get("trailing_activation_mult", 1.5))
+            bot.trailing_distance_mult = float(cfg.get("trailing_distance_mult", 1.5))
+            bot.trailing_step_mult = float(cfg.get("trailing_step_mult", 0.3))
+            bot.trailing_atr_tf = cfg.get("trailing_atr_tf", "5m")
 
     def on_mode_change(self, event=None):
         mode = self.var_mode.get()
