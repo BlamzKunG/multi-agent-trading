@@ -493,7 +493,7 @@ class TradingBotGUI:
             self.perf_labels[key] = {}
             for col_idx, strat_name in enumerate(["scalping", "daytrading", "swingtrading"], start=1):
                 val_lbl = tk.Label(perf_frame, text="-", font=("Outfit", 10), bg="#1e293b", fg="#f8fafc")
-                val_lbl.grid(row=row_idx, column=col_idx, sticky="center", padx=10, pady=6)
+                val_lbl.grid(row=row_idx, column=col_idx, padx=10, pady=6)
                 self.perf_labels[key][strat_name] = val_lbl
 
     def setup_logging(self):
