@@ -45,7 +45,6 @@ class TradingAgents:
 
     def _get_models_to_try(self, model, category):
         # รีเซ็ตแคชโมเดลสำเร็จล่าสุดทุกๆ 15 นาที เพื่อให้ระบบมีโอกาสกลับมาลองใช้รุ่นที่ถูกที่สุดใหม่
-        import time
         if self.last_successful_model and (time.time() - self.last_success_time > 15 * 60):
             logging.info("⏰ ครบ 15 นาทีแล้ว: รีเซ็ตโมเดลสำเร็จล่าสุดเพื่อกลับไปทดสอบใช้รุ่นที่ถูกที่สุดใหม่")
             self.last_successful_model = None
@@ -154,7 +153,6 @@ class TradingAgents:
                         content = result['choices'][0]['message']['content']
                     
                     # หากเรียกสำเร็จ ให้เซฟเป็นโมเดลที่ใช้งานได้สำเร็จล่าสุดแบบ Global พร้อมเวลาบันทึก
-                    import time
                     self.last_successful_model = current_model
                     self.last_success_time = time.time()
                     logging.info(f"💾 บันทึกโมเดลสำเร็จล่าสุดแบบ Global: {current_model}")
