@@ -44,39 +44,23 @@ class TradingAgents:
     def _get_models_to_try(self, model, category):
         if category == "analysis":
             catalog = list(self.analysis_models_catalog)
-            last_success = self.last_successful_analysis_model
         elif category == "management":
             catalog = list(self.management_models_catalog)
-            last_success = self.last_successful_management_model
         else:
             is_management = any(m in str(model).lower() for m in ["flash", "haiku", "mini"])
             if is_management:
                 catalog = list(self.management_models_catalog)
-                last_success = self.last_successful_management_model
                 category = "management"
             else:
                 catalog = list(self.analysis_models_catalog)
-                last_success = self.last_successful_analysis_model
                 category = "analysis"
                 
-        models_to_try = []
+        # เพื่อให้แน่ใจว่ารุ่นที่ถูกที่สุดในแค็ตตาล็อกจะถูกเลือกมาใช้งานก่อนเป็นลำดับแรกเสมอ (Cheapest-first)
+        models_to_try = list(catalog)
         
-        # 1. ลองใช้โมเดลสำเร็จล่าสุดก่อนเป็นอันดับแรก
-        if last_success and last_success in catalog:
-            models_to_try.append(last_success)
-            
-        # 2. ลองใช้โมเดลหลักที่ถูกกำหนดมา (ถ้ายังไม่มีอยู่ในคิว)
-        if model and model in catalog and model not in models_to_try:
-            models_to_try.append(model)
-            
-        # 3. ตามด้วยลำดับโมเดลจากราคาถูกสุดไปแพงสุด
-        for m in catalog:
-            if m not in models_to_try:
-                models_to_try.append(m)
-                
-        # ป้องกันกรณีระบุโมเดลนอกแค็ตตาล็อก
+        # ป้องกันกรณีระบุโมเดลอื่นนอกเหนือจากที่มีในแค็ตตาล็อก ให้ใส่ต่อท้าย
         if model and model not in models_to_try:
-            models_to_try.insert(0, model)
+            models_to_try.append(model)
             
         return models_to_try, category
 

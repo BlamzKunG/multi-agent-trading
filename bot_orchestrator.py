@@ -281,8 +281,35 @@ class TradingBotOrchestrator:
         logging.info(f"ผลวิเคราะห์ {strategy_name}: {action} | Reasoning: {reason}")
         
         # 7. ดำเนินการจัดการออเดอร์ตามผลการวิเคราะห์
+        # กรองและจำกัดเวลาการพักคำสั่งซื้อขาย (Hold Minutes) ให้สอดคล้องตามกลยุทธ์ย่อยอย่างแม่นยำ
+        hold_min_raw = decision.get("hold_minutes")
+        try:
+            hold_min_val = int(hold_min_raw) if hold_min_raw is not None else None
+        except Exception:
+            hold_min_val = None
+
+        if strategy_name == "scalping":
+            valid_holds = [5, 10, 15, 30]
+            if hold_min_val not in valid_holds:
+                hold_min = min(valid_holds, key=lambda x: abs(x - hold_min_val)) if hold_min_val is not None else 5
+            else:
+                hold_min = hold_min_val
+        elif strategy_name == "daytrading":
+            valid_holds = [30, 60, 240]
+            if hold_min_val not in valid_holds:
+                hold_min = min(valid_holds, key=lambda x: abs(x - hold_min_val)) if hold_min_val is not None else 30
+            else:
+                hold_min = hold_min_val
+        elif strategy_name == "swingtrading":
+            valid_holds = [240, 480, 720]
+            if hold_min_val not in valid_holds:
+                hold_min = min(valid_holds, key=lambda x: abs(x - hold_min_val)) if hold_min_val is not None else 240
+            else:
+                hold_min = hold_min_val
+        else:
+            hold_min = int(hold_min_val or 60)
+
         if action == "HOLD":
-            hold_min = int(decision.get("hold_minutes") or 60)
             strat["next_run_time"] = time.time() + (hold_min * 60)
             logging.info(f"พักกลยุทธ์ {strategy_name} เป็นเวลา {hold_min} นาที")
             msg = (
@@ -304,7 +331,6 @@ class TradingBotOrchestrator:
                         f"**Reason:** {reason}"
                     )
                     self.send_discord_message(msg)
-            hold_min = int(decision.get("hold_minutes") or 60)
             strat["next_run_time"] = time.time() + (hold_min * 60)
             
         elif action == "MODIFY":
@@ -323,7 +349,6 @@ class TradingBotOrchestrator:
                             f"**Reason:** {reason}"
                         )
                         self.send_discord_message(msg)
-            hold_min = int(decision.get("hold_minutes") or 60)
             strat["next_run_time"] = time.time() + (hold_min * 60)
             
         elif action == "CANCEL_AND_NEW" or action in ["BUY", "SELL"]:
