@@ -113,6 +113,23 @@ class MT5Integration:
             logging.warning(f"⚠️ ไม่พบสัญลักษณ์ {symbol} ในระบบ กำลังรอซิงค์ข้อมูลสัญลักษณ์จากโบรกเกอร์ (รอบที่ {attempt+1}/5)...")
             time.sleep(1.5)
             
+        # หากครบ 5 รอบแล้วยังไม่พบ ให้พิมพ์ข้อมูลสำหรับตรวจวินิจฉัยปัญหา (Diagnostic Logs)
+        all_symbols = mt5.symbols_get()
+        if all_symbols:
+            gold_matches = [sym.name for sym in all_symbols if "XAU" in sym.name.upper() or "GOLD" in sym.name.upper()]
+            btc_matches = [sym.name for sym in all_symbols if "BTC" in sym.name.upper() or "BITCOIN" in sym.name.upper()]
+            logging.error(f"❌ [Diagnostic] สแกนพบสัญลักษณ์ทองคำทั้งหมดบนโบรกเกอร์: {gold_matches}")
+            logging.error(f"❌ [Diagnostic] สแกนพบสัญลักษณ์บิทคอยน์ทั้งหมดบนโบรกเกอร์: {btc_matches}")
+            logging.error(f"จำนวนคู่เงินทั้งหมดบนโบรกเกอร์: {len(all_symbols)} คู่เงิน")
+        else:
+            # ลองใช้ mt5.symbols_get(group="*") เผื่อ symbols_get() เปล่าๆ คืนค่า None
+            all_symbols_wildcard = mt5.symbols_get(group="*")
+            if all_symbols_wildcard:
+                gold_matches = [sym.name for sym in all_symbols_wildcard if "XAU" in sym.name.upper() or "GOLD" in sym.name.upper()]
+                logging.error(f"❌ [Diagnostic-Wildcard] สแกนพบสัญลักษณ์ทองคำทั้งหมด: {gold_matches}")
+            else:
+                logging.error("❌ [Diagnostic] ไม่สามารถดึงรายชื่อคู่เงินใดๆ จาก MT5 ได้เลย (symbols_get() คืนค่า None) รหัสข้อผิดพลาด: " + str(mt5.last_error()))
+            
         self.symbol_cache[symbol] = symbol
         return symbol
 
