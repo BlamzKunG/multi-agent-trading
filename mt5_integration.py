@@ -63,17 +63,41 @@ class MT5Integration:
         sym_info = mt5.symbol_info(symbol)
         if sym_info is not None:
             self.symbol_cache[symbol] = symbol
+            # เลือกใน Market Watch เพื่อความชัวร์
+            mt5.symbol_select(symbol, True)
             return symbol
             
-        # 2. ลองค้นหาคำใกล้เคียงที่มีคำสำคัญ (XAU, BTC)
-        symbols = mt5.symbols_get()
-        if symbols:
-            search_key = "XAU" if "XAU" in symbol.upper() else "BTC" if "BTC" in symbol.upper() else None
-            if search_key:
+        # 2. ลองสแกนหารายการชื่อสัญลักษณ์ยอดนิยมโดยตรง (รวดเร็วและไม่มีปัญหา Sync Lag)
+        common_suffixes = ["", "m", "-ECN", ".i", "_", ".m", ".ecn", "micro", "-pro", ".pro", "pro"]
+        search_key = "XAUUSD" if "XAU" in symbol.upper() else "BTCUSD" if "BTC" in symbol.upper() else None
+        
+        if search_key:
+            candidates = []
+            if search_key == "XAUUSD":
+                candidates.append("GOLD")
+            for suffix in common_suffixes:
+                candidates.append(f"{search_key}{suffix}")
+                
+            for candidate in candidates:
+                if mt5.symbol_select(candidate, True):
+                    logging.info(f"🔍 [Auto-Discovery/Suffix] พบและเลือกสัญลักษณ์สำเร็จ: {candidate}")
+                    self.symbol_cache[symbol] = candidate
+                    return candidate
+                    
+        # 3. หากยังไม่พบ ลองค้นหาผ่านรายชื่อคู่เงินทั้งหมดจากโบรกเกอร์ (Fallback)
+        search_key_short = "XAU" if "XAU" in symbol.upper() else "BTC" if "BTC" in symbol.upper() else None
+        if search_key_short:
+            symbols = mt5.symbols_get(group=f"*{search_key_short}*")
+            if not symbols and search_key_short == "XAU":
+                symbols = mt5.symbols_get(group="*GOLD*")
+            if not symbols and search_key_short == "BTC":
+                symbols = mt5.symbols_get(group="*BITCOIN*")
+                
+            if symbols:
                 for sym in symbols:
                     name = sym.name.upper()
-                    if search_key in name and "USD" in name:
-                        logging.info(f"🔍 [Auto-Discovery] พบสัญลักษณ์ทดแทนบนโบรกเกอร์สำหรับ {symbol} -> {sym.name}")
+                    if (search_key_short in name and "USD" in name) or (name == "GOLD"):
+                        logging.info(f"🔍 [Auto-Discovery/FullSearch] พบและเลือกสัญลักษณ์สำเร็จ: {sym.name}")
                         self.symbol_cache[symbol] = sym.name
                         mt5.symbol_select(sym.name, True)
                         return sym.name
