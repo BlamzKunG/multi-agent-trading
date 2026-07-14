@@ -59,49 +59,60 @@ class MT5Integration:
         if not self.connect():
             return symbol
             
-        # 1. ลองค้นหาแบบตรงตัว
-        sym_info = mt5.symbol_info(symbol)
-        if sym_info is not None:
-            self.symbol_cache[symbol] = symbol
-            # เลือกใน Market Watch เพื่อความชัวร์
-            mt5.symbol_select(symbol, True)
-            return symbol
+        # ลูปสูงสุด 5 ครั้ง พร้อมมีดีเลย์ เพื่อรองรับกรณีโบรกเกอร์เพิ่งล็อกอินและกำลัง Sync รายชื่อคู่เงิน (Sync Lag)
+        for attempt in range(5):
+            # 1. ลองค้นหาแบบตรงตัว
+            sym_info = mt5.symbol_info(symbol)
+            if sym_info is not None:
+                self.symbol_cache[symbol] = symbol
+                mt5.symbol_select(symbol, True)
+                return symbol
+                
+            # 2. ลองสแกนหารายการชื่อสัญลักษณ์ยอดนิยมโดยตรง (รวมสกุลต่อท้ายของเกือบทุกโบรกเกอร์)
+            common_suffixes = [
+                "", "m", "-ECN", ".i", "_", ".m", ".ecn", "micro", "-pro", ".pro", "pro", 
+                ".cfd", ".vt", "+", ".x", "g", ".g", ".raw", "raw", ".std", "std", "mini", ".mini"
+            ]
+            search_key = "XAUUSD" if "XAU" in symbol.upper() else "BTCUSD" if "BTC" in symbol.upper() else None
             
-        # 2. ลองสแกนหารายการชื่อสัญลักษณ์ยอดนิยมโดยตรง (รวดเร็วและไม่มีปัญหา Sync Lag)
-        common_suffixes = ["", "m", "-ECN", ".i", "_", ".m", ".ecn", "micro", "-pro", ".pro", "pro"]
-        search_key = "XAUUSD" if "XAU" in symbol.upper() else "BTCUSD" if "BTC" in symbol.upper() else None
-        
-        if search_key:
-            candidates = []
-            if search_key == "XAUUSD":
-                candidates.append("GOLD")
-            for suffix in common_suffixes:
-                candidates.append(f"{search_key}{suffix}")
-                
-            for candidate in candidates:
-                if mt5.symbol_select(candidate, True):
-                    logging.info(f"🔍 [Auto-Discovery/Suffix] พบและเลือกสัญลักษณ์สำเร็จ: {candidate}")
-                    self.symbol_cache[symbol] = candidate
-                    return candidate
+            if search_key:
+                candidates = []
+                if search_key == "XAUUSD":
+                    candidates.append("GOLD")
+                    candidates.append("GOLD.m")
+                    candidates.append("GOLD.pro")
+                    candidates.append("GOLD.cfd")
+                for suffix in common_suffixes:
+                    candidates.append(f"{search_key}{suffix}")
                     
-        # 3. หากยังไม่พบ ลองค้นหาผ่านรายชื่อคู่เงินทั้งหมดจากโบรกเกอร์ (Fallback)
-        search_key_short = "XAU" if "XAU" in symbol.upper() else "BTC" if "BTC" in symbol.upper() else None
-        if search_key_short:
-            symbols = mt5.symbols_get(group=f"*{search_key_short}*")
-            if not symbols and search_key_short == "XAU":
-                symbols = mt5.symbols_get(group="*GOLD*")
-            if not symbols and search_key_short == "BTC":
-                symbols = mt5.symbols_get(group="*BITCOIN*")
-                
-            if symbols:
-                for sym in symbols:
-                    name = sym.name.upper()
-                    if (search_key_short in name and "USD" in name) or (name == "GOLD"):
-                        logging.info(f"🔍 [Auto-Discovery/FullSearch] พบและเลือกสัญลักษณ์สำเร็จ: {sym.name}")
-                        self.symbol_cache[symbol] = sym.name
-                        mt5.symbol_select(sym.name, True)
-                        return sym.name
+                for candidate in candidates:
+                    if mt5.symbol_select(candidate, True):
+                        logging.info(f"🔍 [Auto-Discovery/Suffix] พบและเลือกสัญลักษณ์สำเร็จ (รอบที่ {attempt+1}): {candidate}")
+                        self.symbol_cache[symbol] = candidate
+                        return candidate
                         
+            # 3. หากยังไม่พบ ลองค้นหาผ่านรายชื่อคู่เงินทั้งหมดจากโบรกเกอร์ (Fallback)
+            search_key_short = "XAU" if "XAU" in symbol.upper() else "BTC" if "BTC" in symbol.upper() else None
+            if search_key_short:
+                symbols = mt5.symbols_get(group=f"*{search_key_short}*")
+                if not symbols and search_key_short == "XAU":
+                    symbols = mt5.symbols_get(group="*GOLD*")
+                if not symbols and search_key_short == "BTC":
+                    symbols = mt5.symbols_get(group="*BITCOIN*")
+                    
+                if symbols:
+                    for sym in symbols:
+                        name = sym.name.upper()
+                        if (search_key_short in name and "USD" in name) or (name == "GOLD"):
+                            logging.info(f"🔍 [Auto-Discovery/FullSearch] พบและเลือกสัญลักษณ์สำเร็จ (รอบที่ {attempt+1}): {sym.name}")
+                            self.symbol_cache[symbol] = sym.name
+                            mt5.symbol_select(sym.name, True)
+                            return sym.name
+            
+            # หากยังไม่พบในรอบนี้ แสดงว่าโปรแกรมกำลังล็อกอินและ Sync ข้อมูล ให้รอ 1.5 วินาทีแล้วลองใหม่
+            logging.warning(f"⚠️ ไม่พบสัญลักษณ์ {symbol} ในระบบ กำลังรอซิงค์ข้อมูลสัญลักษณ์จากโบรกเกอร์ (รอบที่ {attempt+1}/5)...")
+            time.sleep(1.5)
+            
         self.symbol_cache[symbol] = symbol
         return symbol
 
