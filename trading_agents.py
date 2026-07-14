@@ -758,7 +758,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         final_decision = self.review_order(proposal, regime_report, trend_report, pa_report, symbol)
         return final_decision
 
-    def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None):
+    def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
         """
         2) Day Trading Agent: Intraday trading, holds positions only within the day
         """
@@ -819,30 +819,40 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         # CIO Day Trade Master
         cio_system = f"""คุณคือ Day Trade Master / CIO Consensus ของกองทุนเทรดรายวัน
-หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจเปิดออเดอร์แบบ JSON โครงสร้างนี้เท่านั้น:
+หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจจัดการพอร์ตและคำสั่งซื้อขายแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
-  "action": "BUY" | "SELL" | "HOLD",
-  "hold_minutes": 30 | 60 | 240, // ในโหมด Day Trading หากตอบ HOLD ให้เลือกพักวิเคราะห์ 30, 60 หรือ 240 นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
+  "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CANCEL" | "CANCEL_AND_NEW",
+  "ticket": int_หรือ_string_หรือ_null, // ใส่ Ticket ID ของคำสั่งล่วงหน้า (Pending Order) ที่ต้องการจัดการ (หากไม่มีให้ใส่ null)
+  "hold_minutes": 30 | 60 | 240, // หากตอบ HOLD หรือข้ามรอบ ให้เลือกเวลาหน่วงพักวิเคราะห์รอบต่อไป
   "lot": float,
-  "entry": float,
-  "sl": float,
-  "tp": float,
-  "reasoning": "ประโยคสรุปเหตุผลการเข้าเทรดกลยุทธ์ย่อย (เช่น เข้าย่อดึงกลับตัวแบบ Trend continuation หรือ เข้าดักส่วนขอบ Mean reversion)"
+  "entry": float_หรือ_null, // หากต้องการตั้ง Pending Order ให้ระบุราคาที่ห่างจากราคาปัจจุบัน หรือระบุ null หากต้องการใช้ Market Price ทันที
+  "sl": float_หรือ_null,
+  "tp": float_หรือ_null,
+  "reasoning": "ประโยคสรุปเหตุผลการตัดสินใจและการเข้าเทรดสไตล์ Day Trade"
 }}
 
 กติกา:
 1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
-2. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณตามความเสี่ยง 1% คือ {final_lot}
-3. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำรายวันห่างประมาณ: {sl_distance_usd:.2f} USD)
-4. ออเดอร์ทั้งหมดต้องไม่ถือครองข้ามคืน"""
+2. หากมีคำสั่งล่วงหน้า (Pending Order) เปิดค้างอยู่ (ข้อมูลด้านล่าง) คุณสามารถเลือก action เป็น:
+   - "HOLD": ถือคำสั่งล่วงหน้านี้ต่อตามเดิม
+   - "MODIFY": แก้ไขราคาเข้า (entry), SL หรือ TP ของตั๋วใบนี้ (ระบุเลข ticket ให้ถูกต้อง)
+   - "CANCEL": ยกเลิกคำสั่งล่วงหน้านี้ออกไปก่อนชั่วคราว
+   - "CANCEL_AND_NEW": ยกเลิกคำสั่งเดิมแล้วต้องการยื่นตั้งคำสั่งล่วงหน้าอันใหม่ทันที
+3. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณตามความเสี่ยง 1% คือ {final_lot}
+4. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำรายวันห่างประมาณ: {sl_distance_usd:.2f} USD)
+5. ออเดอร์ทั้งหมดต้องไม่ถือครองข้ามคืน"""
 
+        pending_str = json.dumps(pending_orders, indent=2) if pending_orders else "ไม่มีคำสั่งล่วงหน้าค้างอยู่"
         cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
 รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
+รายงานคำสั่งล่วงหน้า (Pending Orders) ที่ยังไม่ทำงาน:
+{pending_str}
+
 รายงาน Intraday Trend Analyst: {trend_report}
 รายงาน Range Guard: {range_report}
 {reflection_context}
 
-จงตอบสรุปผลการเทรดแบบ Day Trading ในรูปแบบ JSON:"""
+จงตอบสรุปการตัดสินใจในรูปแบบ JSON:"""
 
         logging.info("Day Trading CIO: สรุปผลลัพธ์มติการเทรดแบบ Day Trading...")
         proposal = self._call_llm(model, [
@@ -853,7 +863,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         final_decision = self.review_order(proposal, regime_report, trend_report, range_report, symbol)
         return final_decision
 
-    def analyze_swingtrading(self, df_4h, df_1d, df_1w, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None):
+    def analyze_swingtrading(self, df_4h, df_1d, df_1w, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
         """
         3) Swing Trading Agent: Holds positions for days to weeks, capturing large structural moves
         """
@@ -897,7 +907,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         # Sub-agent 2: Fundamental Catalyst Guard
         fundamental_system = f"""คุณคือ Fundamental Catalyst Guard ทำหน้าที่วิเคราะห์ข่าวใหญ่ระดับมหภาคและดอกเบี้ยนโยบาย
-วิเคราะห์ความเสี่ยงข้ามสัปดาห์ เช่น Gap Risk, ค่า Swap (Carry cost), ปัจจัยนโยบายธนาคารกลางที่จะเกิดขึ้นในระยะยาว
+วิเคราะห์ความเสี่ยงข้ามสัปดาห์ เช่น Gap Risk, ค่า Swap (Carry cost), ปัจจัยนโยคารธนาคารกลางที่จะเกิดขึ้นในระยะยาว
 ส่งรายงานแจ้งเตือน (ไม่เกิน 3 บรรทัด) เรื่องความเสี่ยงและฝั่งทิศทางที่มีแต้มต่อเชิงปัจจัยพื้นฐานร่วมกับเทรนยาว"""
         
         fundamental_user = f"""ราคาปัจจุบัน: {current_price:.2f}
@@ -913,30 +923,40 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         # CIO Swing Master
         cio_system = f"""คุณคือ Swing Master / CIO Consensus ของกองทุนเทรดสวิงระยะยาว
-หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจเปิดออเดอร์แบบ JSON โครงสร้างนี้เท่านั้น:
+หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจจัดการพอร์ตและคำสั่งซื้อขายแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
-  "action": "BUY" | "SELL" | "HOLD",
-  "hold_minutes": 240 | 480 | 720, // ในโหมด Swing Trading หากตอบ HOLD ให้เลือกพักวิเคราะห์ 240 (4 ชม.), 480 (8 ชม.) หรือ 720 (12 ชม.) นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
+  "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CANCEL" | "CANCEL_AND_NEW",
+  "ticket": int_หรือ_string_หรือ_null, // ใส่ Ticket ID ของคำสั่งล่วงหน้า (Pending Order) ที่ต้องการจัดการ (หากไม่มีให้ใส่ null)
+  "hold_minutes": 240 | 480 | 720, // ในโหมด Swing Trading หากตอบ HOLD ให้เลือกพักวิเคราะห์ 240 (4 ชม.), 480 (8 ชม.) หรือ 720 (12 ชม.) นาที
   "lot": float,
-  "entry": float,
-  "sl": float,
-  "tp": float,
-  "reasoning": "ประโยคสรุปแผนการเทรดข้ามวันเชิงสวิง (เช่น ดักสวนกรอบรับต้านใหญ่ดึงกลับ หรือ เทรดตามเบรคเอาต์สวิงใหญ่)"
+  "entry": float_หรือ_null, // หากต้องการตั้ง Pending Order ให้ระบุราคาที่ห่างจากราคาปัจจุบัน หรือระบุ null หากต้องการใช้ Market Price ทันที
+  "sl": float_หรือ_null,
+  "tp": float_หรือ_null,
+  "reasoning": "ประโยคสรุปแผนการเทรดสวิงระยะยาวร่วมกับแนวคิดกลยุทธ์"
 }}
 
 กติกา:
 1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
-2. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณตามความเสี่ยง 1% คือ {final_lot}
-3. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำสำหรับการแกว่งสัปดาห์ห่างประมาณ: {sl_distance_usd:.2f} USD)
-4. ยินดีถือออเดอร์ข้ามคืนได้หากสอดคล้องความเสี่ยงและแนวโน้มเชิงมหภาค"""
+2. หากมีคำสั่งล่วงหน้า (Pending Order) เปิดค้างอยู่ (ข้อมูลด้านล่าง) คุณสามารถเลือก action เป็น:
+   - "HOLD": ถือคำสั่งล่วงหน้านี้ต่อตามเดิม
+   - "MODIFY": แก้ไขราคาเข้า (entry), SL หรือ TP ของตั๋วใบนี้ (ระบุเลข ticket ให้ถูกต้อง)
+   - "CANCEL": ยกเลิกคำสั่งล่วงหน้านี้ออกไปก่อนชั่วคราว
+   - "CANCEL_AND_NEW": ยกเลิกคำสั่งเดิมแล้วต้องการยื่นตั้งคำสั่งล่วงหน้าอันใหม่ทันที
+3. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณตามความเสี่ยง 1% คือ {final_lot}
+4. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำสัปดาห์ห่างประมาณ: {sl_distance_usd:.2f} USD)
+5. ยินดีถือออเดอร์ข้ามคืนได้หากสอดคล้องความเสี่ยงและแนวโน้มเชิงมหภาค"""
 
+        pending_str = json.dumps(pending_orders, indent=2) if pending_orders else "ไม่มีคำสั่งล่วงหน้าค้างอยู่"
         cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
 รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
+รายงานคำสั่งล่วงหน้า (Pending Orders) ที่ยังไม่ทำงาน:
+{pending_str}
+
 รายงาน Macro Structure Analyst: {trend_report}
 รายงาน Fundamental Catalyst Guard: {fundamental_report}
 {reflection_context}
 
-จงตอบสรุปผลการเทรดแบบ Swing Trading ในรูปแบบ JSON:"""
+จงตอบสรุปการตัดสินใจในรูปแบบ JSON:"""
 
         logging.info("Swing Trading CIO: สรุปผลลัพธ์มติการเทรดแบบ Swing Trading...")
         proposal = self._call_llm(model, [
@@ -946,3 +966,4 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         final_decision = self.review_order(proposal, regime_report, trend_report, fundamental_report, symbol)
         return final_decision
+
