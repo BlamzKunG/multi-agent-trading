@@ -610,7 +610,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 
     def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
         """
-        1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30 (Scalping Master Multi-Strategy with Pending Orders)
+        1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30 (Scalping Master Multi-Strategy with Parallel Strategy Analysis)
         """
         model = self.analysis_model
         
@@ -633,19 +633,20 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         reflection_context = self._format_reflection(performance_stats, trade_history)
         
         # --- ขั้นตอนที่ 1: เลือกกลยุทธ์ย่อยสเกลปิ้งที่เหมาะสม (Scalping Strategy Selector) ---
+        # สามารถเลือกวิเคราะห์ได้มากกว่า 1 กลยุทธ์หากเงื่อนไขขัดแย้งหรือสอดคล้องพร้อมกันหลายด้าน
         selector_system = f"""คุณคือ Scalping Strategy Selector ของกองทุนเทรดสั้นทองคำ ({symbol})
-หน้าที่ของคุณคือเลือกกลยุทธ์การเทรดสั้นที่เหมาะสมที่สุดจาก 5 กลยุทธ์นี้เท่านั้น:
+หน้าที่ของคุณคือคัดกรองและเลือกกลยุทธ์การเทรดสั้นที่เหมาะสมกับสภาวะราคาในปัจจุบันจาก 5 กลยุทธ์นี้เท่านั้น:
 1. "TREND_PULLBACK" (เข้าซื้อขายเมื่อราคาย่อตัวหาเส้นเฉลี่ยตามแนวโน้มหลัก)
 2. "BREAKOUT" (เข้าซื้อขายเมื่อราคาทะลุขอบแนวรับแนวต้านสวิงหลัก)
 3. "MEAN_REVERSION" (เข้าซื้อขายดักสวนทิศทางกลับเข้าหาค่าเฉลี่ยกลางเมื่อราคายืดตัวเกินตัวเลขความผันผวนปกติ)
 4. "LIQUIDITY_SWEEP" (เข้าซื้อขายดักสวนทิศทางหลังราคาแล่นไปเก็บ Stop Loss แนวต้านรับสำคัญแล้วมีการดึงกลับทันที)
 5. "MOMENTUM_CONTINUATION" (เข้าซื้อขายตามทิศทางความชันและแรงเหวี่ยงตลาดปัจจุบันโดยไม่รอราคาย่อตัว)
 
-คุณต้องเลือกกลยุทธ์ย่อยตัวใดตัวหนึ่งจากข้อมูลสภาวะตลาดหลัก (Market Regime) และข้อมูลราคาล่าสุด
+คุณสามารถเลือกวิเคราะห์วิชาเทรดได้มากกว่า 1 กลยุทธ์พร้อมๆ กัน (เป็นลิสต์ในช่อง selected_strategies) หากสถานการณ์ ณ ปัจจุบันมีแนวโน้มก้ำกึ่งหรือสามารถเกิดขึ้นได้ควบคู่กัน เช่น จังหวะนี้มองได้ทั้งการทุบหลุดเบรคเอาต์ (BREAKOUT) และการเด้งย่อตัวในเทรนใหญ่ (TREND_PULLBACK)
 ตอบกลับในรูปแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
-  "selected_strategy": "TREND_PULLBACK" | "BREAKOUT" | "MEAN_REVERSION" | "LIQUIDITY_SWEEP" | "MOMENTUM_CONTINUATION",
-  "reason": "อธิบายสั้นๆ ทำไมกลยุทธ์นี้จึงเหมาะสมที่สุดสำหรับราคานี้"
+  "selected_strategies": ["TREND_PULLBACK" | "BREAKOUT" | "MEAN_REVERSION" | "LIQUIDITY_SWEEP" | "MOMENTUM_CONTINUATION", ...], // เลือกได้ 1 ถึง 3 กลยุทธ์ที่เหมาะสมที่สุด
+  "reason": "อธิบายสั้นๆ ทำไมจึงควรวิเคราะห์และเฝ้าระวังกลยุทธ์เหล่านี้ร่วมกันในขณะนี้"
 }}"""
 
         selector_user = f"""ราคาปัจจุบัน: {current_price:.2f}
@@ -653,7 +654,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 ประวัติแท่งเทียน M5 ล่าสุด:
 {self._format_candles_brief(df_5m_pa, 50)}
 
-จงวิเคราะห์และเลือกกลยุทธ์สเกลปิ้งที่เหมาะสมที่สุด:"""
+จงวิเคราะห์และระบุลิสต์กลยุทธ์สเกลปิ้งที่เหมาะสมเพื่อส่งไปวิเคราะห์เชิงลึก:"""
 
         logging.info("Scalping Selector: กำลังวิเคราะห์เลือกกลยุทธ์สเกลปิ้งย่อย...")
         strategy_decision = self._call_llm(self.management_model, [
@@ -661,12 +662,15 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             {"role": "user", "content": selector_user}
         ], json_response=True, category="management")
         
-        selected_strat = strategy_decision.get("selected_strategy", "TREND_PULLBACK")
+        selected_strats = strategy_decision.get("selected_strategies", ["TREND_PULLBACK"])
+        if not isinstance(selected_strats, list) or len(selected_strats) == 0:
+            selected_strats = [strategy_decision.get("selected_strategy", "TREND_PULLBACK")]
+            
         strat_reason = strategy_decision.get("reason", "Default strategy selection")
-        logging.info(f"🎯 Scalping Strategy ที่เลือก: {selected_strat} ({strat_reason})")
+        logging.info(f"🎯 Scalping Strategies ที่เลือกวิเคราะห์: {', '.join(selected_strats)} ({strat_reason})")
         
-        # --- ขั้นตอนที่ 2: เรียกใช้ผู้ช่วยวิเคราะห์ย่อยตามประเภทของกลยุทธ์ที่เลือก ---
-        # Sub-agent 1: Micro Trend Analyst
+        # --- ขั้นตอนที่ 2: เรียกใช้ผู้ช่วยวิเคราะห์ย่อยตามประเภทของแต่ละกลยุทธ์ที่เลือก ---
+        # Sub-agent 1: Micro Trend Analyst (รันครั้งเดียวเป็นข้อมูลอิงขอบเขต)
         trend_system = f"""คุณคือ Micro Trend Analyst ทำหน้าที่ประเมินความเอียงของเทรนสั้นของ {symbol}
 วิเคราะห์กราฟแท่งเทียน M15/M30 เพื่อหาทิศทางของค่าเฉลี่ย EMA 50/200 และความชัน (Slope)
 ส่งรายงานสรุปสั้นๆ (ไม่เกิน 3 บรรทัด) ว่าทิศทางใดได้เปรียบ: BUY ONLY, SELL ONLY หรือ HOLD"""
@@ -682,43 +686,49 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             {"role": "user", "content": trend_user}
         ], json_response=False, category="management")
         
-        # Sub-agent 2: Price Action Sniper (ปรับแต่งตามกลยุทธ์ที่เลือก)
-        if selected_strat == "TREND_PULLBACK":
-            pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Trend Pullback) ของ {symbol}
+        # Sub-agent 2: Price Action Sniper (รันแยกทีละกลยุทธ์แบบขนานและรวมรายงานเข้าด้วยกัน)
+        pa_reports_list = []
+        for strat in selected_strats:
+            if strat == "TREND_PULLBACK":
+                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Trend Pullback) ของ {symbol}
 หน้าที่ของคุณคือจับจังหวะราคาย่อตัวมาทดสอบเส้น EMA 50/200 ในกรอบ M5/M15/M30
 ตรวจสอบสัญญาณ Rejection หรือดึงกลับฝั่งเดียวกันกับแนวโน้มหลัก
-ส่งรายงาน (ไม่เกิน 3 บรรทัด) เกี่ยวกับราคาจุดเข้าที่ได้เปรียบ และระดับ SL ใต้เส้น EMA หรือใต้สวิงโลว์หลัก"""
-        elif selected_strat == "BREAKOUT":
-            pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Breakout) ของ {symbol}
+ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Limit Order ที่ได้เปรียบ และระดับ SL ใต้เส้น EMA หรือใต้สวิงโลว์หลัก"""
+            elif strat == "BREAKOUT":
+                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Breakout) ของ {symbol}
 หน้าที่ของคุณคือตรวจจับราคาปิดหลุดขอบเขต Swing High/Low ในอดีตของกรอบ M5/M15 พร้อมกับการขยายตัวของความผันผวน
-ส่งรายงาน (ไม่เกิน 3 บรรทัด) เกี่ยวกับจุดยืนยันการผ่านแนวรับแนวต้าน และระดับ SL บริเวณกึ่งกลางกรอบสวิงหรือระดับราคาเบรคเอาต์เดิม"""
-        elif selected_strat == "MEAN_REVERSION":
-            pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Mean Reversion) ของ {symbol}
+ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Stop Order เมื่อราคาเบรคทะลุ และระดับ SL บริเวณกึ่งกลางกรอบสวิงหรือระดับราคาเบรคเอาต์เดิม"""
+            elif strat == "MEAN_REVERSION":
+                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Mean Reversion) ของ {symbol}
 หน้าที่ของคุณคือตรวจสอบหาราคาที่เหยียดตัวออกจากเส้นค่าเฉลี่ย EMA 200 มากเกินไปในกรอบ M5/M15 ร่วมกับสัญญาณแท่งเทียนกลับตัวฝั่งตรงข้าม
-ส่งรายงาน (ไม่เกิน 3 บรรทัด) ชี้ราคาจุดเข้าดักสวนกลับ และจุด SL เหนือปลายไส้เทียนของแท่งกลับตัวล่าสุด"""
-        elif selected_strat == "LIQUIDITY_SWEEP":
-            pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Liquidity Sweep) ของ {symbol}
+ส่งรายงาน (ไม่เกิน 3 บรรทัด) ชี้ราคาจุดตั้ง Limit Order สวนกลับ และจุด SL เหนือปลายไส้เทียนของแท่งกลับตัวล่าสุด"""
+            elif strat == "LIQUIDITY_SWEEP":
+                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Liquidity Sweep) ของ {symbol}
 หน้าที่ของคุณคือเฝ้าระวังจังหวะที่ราคากวาดผ่านแนวต้าน/รับสวิงหลัก (Stop Hunt) แล้วดึงกลับมาปิดในกรอบเดิมทิ้งไส้เทียนยาว Rejection wick
-ส่งรายงาน (ไม่เกิน 3 บรรทัด) ชี้เป้าราคาดักกลับหัวหลังจากการกวาดสภาพคล่อง และ SL เหนือ/ใต้ปลายไส้เทียนที่กวาดไป"""
-        else: # MOMENTUM_CONTINUATION
-            pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Momentum Continuation) ของ {symbol}
+ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Limit Order ดักกลับหัวหลังจากการกวาดสภาพคล่อง และ SL เหนือ/ใต้ปลายไส้เทียนที่กวาดไป"""
+            else: # MOMENTUM_CONTINUATION
+                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Momentum Continuation) ของ {symbol}
 หน้าที่ของคุณคือวิเคราะห์ความลาดชันและการเรียงตัวของเนื้อแท่งเทียนปิดเต็ม (Marubozu) ที่ไร้การย่อตัว เพื่อเกาะแนวราคาตามกระแสเงินไหล
-ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาเข้าตามน้ำทันที และระดับ SL ที่ปลายฐานแท่งเทียนล่าสุด"""
+ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Pending Order ตามน้ำทันที และระดับ SL ที่ปลายฐานแท่งเทียนล่าสุด"""
 
-        pa_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+            pa_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 แท่งเทียน M5 ล่าสุด:
 {self._format_candles_brief(df_5m_pa, 50)}
 แท่งเทียน M1 ล่าสุด:
 {self._format_candles_brief(df_1m_pa, 30)}
-กรุณาวิเคราะห์พฤติกรรมราคาสไนเปอร์ตามกลยุทธ์ {selected_strat}:"""
+กรุณาวิเคราะห์พฤติกรรมราคาสไนเปอร์ตามกลยุทธ์ {strat}:"""
+            
+            logging.info(f"Scalping Sub-agent 2: เรียกใช้ Price Action Sniper ({strat})...")
+            report = self._call_llm(model, [
+                {"role": "system", "content": pa_system},
+                {"role": "user", "content": pa_user}
+            ], json_response=False, category="analysis")
+            pa_reports_list.append(f"🔍 **[ผลวิเคราะห์สำหรับกลยุทธ์: {strat}]**\n{report}")
         
-        logging.info(f"Scalping Sub-agent 2: เรียกใช้ Price Action Sniper ({selected_strat})...")
-        pa_report = self._call_llm(model, [
-            {"role": "system", "content": pa_system},
-            {"role": "user", "content": pa_user}
-        ], json_response=False, category="analysis")
+        pa_report_combined = "\n\n".join(pa_reports_list)
         
         # --- ขั้นตอนที่ 3: สรุปมติและเปิดออเดอร์โดย Scalp Master CIO ---
+        # CIO จะนำผลวิเคราะห์ของทุกกลยุทธ์ที่ประเมินมาเปรียบเทียบหาจุดที่ได้เปรียบสูงสุด
         cio_system = f"""คุณคือ Scalp Master / CIO Consensus ของกองทุนเทรดสั้น
 หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจจัดการพอร์ตและคำสั่งซื้อขายแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
@@ -727,13 +737,13 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
   "hold_minutes": 5 | 10 | 15 | 30, // ในโหมด Scalping หากตอบ HOLD ให้เลือกพักวิเคราะห์ 5, 10, 15 หรือ 30 นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
   "lot": float,
   "entry": float_หรือ_null, // เพื่อป้องกันการได้จุดเข้าตลาดที่แย่ (Bad entry) สำหรับกลยุทธ์สเกลปิ้งทองคำ:
-                            // ให้กำหนดเป็นจุด Pending Order (ราคาลิมิต/สต็อป) ที่เหมาะสมตามกลยุทธ์แทนการเปิดตลาดทันที (Market Order)
-                            // เช่น TREND_PULLBACK หรือ MEAN_REVERSION หรือ LIQUIDITY_SWEEP ให้ตั้งราคาแบบ Limit Order (BUY ต่ำกว่าราคาตลาด / SELL สูงกว่าราคาตลาด)
-                            // และสำหรับ BREAKOUT ให้ตั้งราคาแบบ Stop Order (BUY สูงกว่าราคาตลาด / SELL ต่ำกว่าราคาตลาด)
+                            // ให้เปรียบเทียบผลวิเคราะห์ของกลยุทธ์ย่อยทั้งหลายด้านล่าง แล้วเคาะเลือกจุดเข้า (Pending Order) ที่ได้เปรียบที่สุด 1 จุด
+                            // เช่น หากเลือกแผนย่อช้อนซื้อ ให้ตั้งราคาแบบ Limit (BUY ต่ำกว่าราคาตลาด) 
+                            // หากเลือกแผนราคาทะลุวิ่งตามแนวต้าน ให้ตั้งราคาแบบ Stop (BUY สูงกว่าราคาตลาด)
                             // กรุณาระบุราคาจุดเข้าดังกล่าวลงในช่อง entry (หรือระบุ null หากต้องการยิงทันทีแบบ Market Price ซึ่งไม่แนะนำ)
   "sl": float_หรือ_null,
   "tp": float_หรือ_null,
-  "reasoning": "ประโยคสรุปแผนการเทรดสั้นภายใต้กลยุทธ์ย่อยที่ถูกเลือก"
+  "reasoning": "ประโยคสรุปการเลือกแผนการเทรดโดยเปรียบเทียบระหว่างหลายกลยุทธ์ย่อยที่ถูกส่งเข้ามาวิเคราะห์"
 }}
 
 กติกา:
@@ -743,7 +753,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
    - "MODIFY": แก้ไขราคาเข้า (entry), SL หรือ TP ของตั๋วใบนี้ (ระบุเลข ticket ให้ถูกต้อง)
    - "CANCEL": ยกเลิกคำสั่งล่วงหน้านี้ออกไปก่อนชั่วคราว
    - "CANCEL_AND_NEW": ยกเลิกคำสั่งเดิมแล้วต้องการยื่นตั้งคำสั่งล่วงหน้าอันใหม่ทันที
-3. กลยุทธ์ย่อยสเกลปิ้งที่ได้รับเลือกในรอบนี้คือ: {selected_strat} (เหตุผลเลือกกลยุทธ์: {strat_reason})
+3. ลิสต์กลยุทธ์ย่อยสเกลปิ้งที่ได้รับการหยิบมาวิเคราะห์ในรอบนี้คือ: {', '.join(selected_strats)}
 4. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณมาตามความเสี่ยง 1% คือ {final_lot}
 5. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำห่างประมาณ: {sl_distance_usd:.2f} USD)"""
 
@@ -753,9 +763,10 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 รายงานคำสั่งล่วงหน้า (Pending Orders) ของกลยุทธ์ Scalping ที่ยังไม่ทำงาน:
 {pending_str}
 
-รายงานเลือกใช้กลยุทธ์สเกลปิ้งย่อย: {selected_strat} ({strat_reason})
+รายงานกลยุทธ์ย่อยสเกลปิ้งที่ผ่านการคัดเลือกเบื้องต้น: {', '.join(selected_strats)} ({strat_reason})
 รายงาน Micro Trend Analyst: {trend_report}
-รายงาน Price Action Sniper: {pa_report}
+รายงาน Price Action Sniper ของแต่ละกลยุทธ์เชิงเปรียบเทียบ:
+{pa_report_combined}
 {reflection_context}
 
 จงตอบสรุปผลการเทรดแบบ Scalping ในรูปแบบ JSON:"""
@@ -767,7 +778,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ], json_response=True, category="analysis")
         
         # เรียก Reviewer ตรวจทานออเดอร์สุดท้ายเพื่อความปลอดภัยสูงสุด
-        final_decision = self.review_order(proposal, regime_report, trend_report, pa_report, symbol)
+        final_decision = self.review_order(proposal, regime_report, trend_report, pa_report_combined, symbol)
         return final_decision
 
     def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
