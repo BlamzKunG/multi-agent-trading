@@ -606,9 +606,9 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             summary += f"- {row['timestamp'].strftime('%H:%M')} Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | {row['candle_type']} | ATR={row.get('atr_14', 0.0):.2f}\n"
         return summary
 
-    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None):
+    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
         """
-        1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30 (Scalping Master Multi-Strategy)
+        1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30 (Scalping Master Multi-Strategy with Pending Orders)
         """
         model = self.analysis_model
         
@@ -718,26 +718,39 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         # --- ขั้นตอนที่ 3: สรุปมติและเปิดออเดอร์โดย Scalp Master CIO ---
         cio_system = f"""คุณคือ Scalp Master / CIO Consensus ของกองทุนเทรดสั้น
-หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจเปิดออเดอร์แบบ JSON โครงสร้างนี้เท่านั้น:
+หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจจัดการพอร์ตและคำสั่งซื้อขายแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
-  "action": "BUY" | "SELL" | "HOLD",
+  "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CANCEL" | "CANCEL_AND_NEW",
+  "ticket": int_หรือ_string_หรือ_null, // ใส่ Ticket ID ของคำสั่งล่วงหน้า (Pending Order) ที่ต้องการจัดการ (หากไม่มีให้ใส่ null)
   "hold_minutes": 5 | 10 | 15 | 30, // ในโหมด Scalping หากตอบ HOLD ให้เลือกพักวิเคราะห์ 5, 10, 15 หรือ 30 นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
   "lot": float,
-  "entry": float,
-  "sl": float,
-  "tp": float,
+  "entry": float_หรือ_null, // เพื่อป้องกันการได้จุดเข้าตลาดที่แย่ (Bad entry) สำหรับกลยุทธ์สเกลปิ้งทองคำ:
+                            // ให้กำหนดเป็นจุด Pending Order (ราคาลิมิต/สต็อป) ที่เหมาะสมตามกลยุทธ์แทนการเปิดตลาดทันที (Market Order)
+                            // เช่น TREND_PULLBACK หรือ MEAN_REVERSION หรือ LIQUIDITY_SWEEP ให้ตั้งราคาแบบ Limit Order (BUY ต่ำกว่าราคาตลาด / SELL สูงกว่าราคาตลาด)
+                            // และสำหรับ BREAKOUT ให้ตั้งราคาแบบ Stop Order (BUY สูงกว่าราคาตลาด / SELL ต่ำกว่าราคาตลาด)
+                            // กรุณาระบุราคาจุดเข้าดังกล่าวลงในช่อง entry (หรือระบุ null หากต้องการยิงทันทีแบบ Market Price ซึ่งไม่แนะนำ)
+  "sl": float_หรือ_null,
+  "tp": float_หรือ_null,
   "reasoning": "ประโยคสรุปแผนการเทรดสั้นภายใต้กลยุทธ์ย่อยที่ถูกเลือก"
 }}
 
 กติกา:
 1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
-2. กลยุทธ์ย่อยสเกลปิ้งที่ได้รับเลือกในรอบนี้คือ: {selected_strat} (เหตุผลเลือกกลยุทธ์: {strat_reason})
-3. หากสเปรดโบรกเกอร์ล่าสุด ({spread}) สูงเกิน หรือความผันผวน ATR ({atr_5m:.2f}) ต่ำเกินไป หรือแผนเข้าเทรดขัดแย้งกับสภาวะของกลยุทธ์ {selected_strat} ให้เลือก HOLD และระบุเวลาพักเทรด
+2. หากมีคำสั่งล่วงหน้า (Pending Order) เปิดค้างอยู่ (ข้อมูลด้านล่าง) คุณสามารถเลือก action เป็น:
+   - "HOLD": ถือคำสั่งล่วงหน้านี้ต่อตามเดิม
+   - "MODIFY": แก้ไขราคาเข้า (entry), SL หรือ TP ของตั๋วใบนี้ (ระบุเลข ticket ให้ถูกต้อง)
+   - "CANCEL": ยกเลิกคำสั่งล่วงหน้านี้ออกไปก่อนชั่วคราว
+   - "CANCEL_AND_NEW": ยกเลิกคำสั่งเดิมแล้วต้องการยื่นตั้งคำสั่งล่วงหน้าอันใหม่ทันที
+3. กลยุทธ์ย่อยสเกลปิ้งที่ได้รับเลือกในรอบนี้คือ: {selected_strat} (เหตุผลเลือกกลยุทธ์: {strat_reason})
 4. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณมาตามความเสี่ยง 1% คือ {final_lot}
 5. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำห่างประมาณ: {sl_distance_usd:.2f} USD)"""
 
+        pending_str = json.dumps(pending_orders, indent=2) if pending_orders else "ไม่มีคำสั่งล่วงหน้าค้างอยู่"
         cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
 รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
+รายงานคำสั่งล่วงหน้า (Pending Orders) ของกลยุทธ์ Scalping ที่ยังไม่ทำงาน:
+{pending_str}
+
 รายงานเลือกใช้กลยุทธ์สเกลปิ้งย่อย: {selected_strat} ({strat_reason})
 รายงาน Micro Trend Analyst: {trend_report}
 รายงาน Price Action Sniper: {pa_report}

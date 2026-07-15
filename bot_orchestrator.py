@@ -202,7 +202,7 @@ class TradingBotOrchestrator:
         
         # 5. ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) และประวัติย้อนหลังของกลยุทธ์นี้
         pending_orders = []
-        if strategy_name in ["daytrading", "swingtrading"]:
+        if strategy_name in ["scalping", "daytrading", "swingtrading"]:
             pending_orders = self.exchange.get_pending_orders(symbol=self.symbol, magic=magic_number)
             
         closed_trades = status.get('history', [])
@@ -222,7 +222,8 @@ class TradingBotOrchestrator:
                 balance=self.exchange.balance, symbol=self.symbol,
                 leverage=self.exchange.leverage, spread=0.0,
                 performance_stats=perf_stats, trade_history=closed_trades,
-                regime_report=regime
+                regime_report=regime,
+                pending_orders=pending_orders
             )
             
         elif strategy_name == "daytrading":
