@@ -608,9 +608,9 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             summary += f"- {row['timestamp'].strftime('%H:%M')} Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | {row['candle_type']} | ATR={row.get('atr_14', 0.0):.2f}\n"
         return summary
 
-    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
+    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None, strats_to_analyze=None):
         """
-        1) Scalping Agent: Price Action + Trend Follow on M5/M15/M30 (Scalping Master Multi-Strategy with Parallel Strategy Analysis)
+        1) Scalping Agent: Parallel analysis where each active sub-strategy acts as an independent agent (using its own magic number & pending orders).
         """
         model = self.analysis_model
         
@@ -633,7 +633,6 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         reflection_context = self._format_reflection(performance_stats, trade_history)
         
         # --- ขั้นตอนที่ 1: เลือกกลยุทธ์ย่อยสเกลปิ้งที่เหมาะสม (Scalping Strategy Selector) ---
-        # สามารถเลือกวิเคราะห์ได้มากกว่า 1 กลยุทธ์หากเงื่อนไขขัดแย้งหรือสอดคล้องพร้อมกันหลายด้าน
         selector_system = f"""คุณคือ Scalping Strategy Selector ของกองทุนเทรดสั้นทองคำ ({symbol})
 หน้าที่ของคุณคือคัดกรองและเลือกกลยุทธ์การเทรดสั้นที่เหมาะสมกับสภาวะราคาในปัจจุบันจาก 5 กลยุทธ์นี้เท่านั้น:
 1. "TREND_PULLBACK" (เข้าซื้อขายเมื่อราคาย่อตัวหาเส้นเฉลี่ยตามแนวโน้มหลัก)
@@ -642,11 +641,11 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 4. "LIQUIDITY_SWEEP" (เข้าซื้อขายดักสวนทิศทางหลังราคาแล่นไปเก็บ Stop Loss แนวต้านรับสำคัญแล้วมีการดึงกลับทันที)
 5. "MOMENTUM_CONTINUATION" (เข้าซื้อขายตามทิศทางความชันและแรงเหวี่ยงตลาดปัจจุบันโดยไม่รอราคาย่อตัว)
 
-คุณสามารถเลือกวิเคราะห์วิชาเทรดได้มากกว่า 1 กลยุทธ์พร้อมๆ กัน (เป็นลิสต์ในช่อง selected_strategies) หากสถานการณ์ ณ ปัจจุบันมีแนวโน้มก้ำกึ่งหรือสามารถเกิดขึ้นได้ควบคู่กัน เช่น จังหวะนี้มองได้ทั้งการทุบหลุดเบรคเอาต์ (BREAKOUT) และการเด้งย่อตัวในเทรนใหญ่ (TREND_PULLBACK)
+คุณสามารถเลือกวิเคราะห์กลยุทธ์ย่อยได้มากกว่า 1 กลยุทธ์พร้อมกัน (ส่งกลับเป็นลิสต์ใน selected_strategies) หากมีโอกาสเทรดหลายแนวทาง เช่น จังหวะนี้มองได้ทั้ง BREAKOUT และ TREND_PULLBACK
 ตอบกลับในรูปแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
-  "selected_strategies": ["TREND_PULLBACK" | "BREAKOUT" | "MEAN_REVERSION" | "LIQUIDITY_SWEEP" | "MOMENTUM_CONTINUATION", ...], // เลือกได้ 1 ถึง 3 กลยุทธ์ที่เหมาะสมที่สุด
-  "reason": "อธิบายสั้นๆ ทำไมจึงควรวิเคราะห์และเฝ้าระวังกลยุทธ์เหล่านี้ร่วมกันในขณะนี้"
+  "selected_strategies": ["TREND_PULLBACK" | "BREAKOUT" | "MEAN_REVERSION" | "LIQUIDITY_SWEEP" | "MOMENTUM_CONTINUATION", ...], // เลือกได้ 1 ถึง 3 กลยุทธ์
+  "reason": "อธิบายสั้นๆ ทำไมกลยุทธ์เหล่านี้จึงเหมาะสมที่สุด"
 }}"""
 
         selector_user = f"""ราคาปัจจุบัน: {current_price:.2f}
@@ -669,8 +668,23 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         strat_reason = strategy_decision.get("reason", "Default strategy selection")
         logging.info(f"🎯 Scalping Strategies ที่เลือกวิเคราะห์: {', '.join(selected_strats)} ({strat_reason})")
         
-        # --- ขั้นตอนที่ 2: เรียกใช้ผู้ช่วยวิเคราะห์ย่อยตามประเภทของแต่ละกลยุทธ์ที่เลือก ---
-        # Sub-agent 1: Micro Trend Analyst (รันครั้งเดียวเป็นข้อมูลอิงขอบเขต)
+        # กรองเฉพาะกลยุทธ์ที่บอทกำหนดให้ต้องวิเคราะห์ในรอบนี้
+        if strats_to_analyze is None:
+            strats_to_analyze = ["TREND_PULLBACK", "BREAKOUT", "MEAN_REVERSION", "LIQUIDITY_SWEEP", "MOMENTUM_CONTINUATION"]
+            
+        active_strats = [s for s in selected_strats if s in strats_to_analyze]
+        
+        # เพิ่มกลยุทธ์ใดๆ ที่มี pending order ค้างอยู่และระบบขอให้สแกน (เพื่อจัดการ ลบ/แก้ไข)
+        if pending_orders:
+            for s_name, p_list in pending_orders.items():
+                if p_list and s_name in strats_to_analyze and s_name not in active_strats:
+                    active_strats.append(s_name)
+                    
+        if not active_strats:
+            logging.info("⚡ ไม่มีกลยุทธ์ย่อยของ Scalping ใดที่พร้อมหรือต้องทำการประมวลผลวิเคราะห์ในลูปนี้")
+            return {}
+            
+        # --- ขั้นตอนที่ 2: เรียกใช้ Micro Trend Analyst (ข้อมูลอิงร่วม) ---
         trend_system = f"""คุณคือ Micro Trend Analyst ทำหน้าที่ประเมินความเอียงของเทรนสั้นของ {symbol}
 วิเคราะห์กราฟแท่งเทียน M15/M30 เพื่อหาทิศทางของค่าเฉลี่ย EMA 50/200 และความชัน (Slope)
 ส่งรายงานสรุปสั้นๆ (ไม่เกิน 3 บรรทัด) ว่าทิศทางใดได้เปรียบ: BUY ONLY, SELL ONLY หรือ HOLD"""
@@ -686,13 +700,14 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             {"role": "user", "content": trend_user}
         ], json_response=False, category="management")
         
-        # Sub-agent 2: เรียกใช้บอทวิเคราะห์ย่อยตรงตามประเภทของกลยุทธ์ (รันแยกแบบขนานและรวมรายงานเข้าด้วยกัน)
-        strat_reports_list = []
-        for strat in selected_strats:
+        # --- ขั้นตอนที่ 3: วิเคราะห์ทีละกลยุทธ์อิสระ (Strategy-by-Strategy Analysts) ---
+        decisions_dict = {}
+        
+        for strat in active_strats:
             if strat == "TREND_PULLBACK":
                 agent_name = "Trend Pullback Agent"
                 agent_system = f"""คุณคือ Trend Pullback Agent ของ {symbol}
-หน้าที่ของคุณคือจับจังหวะราคาย่อตัวมาทดสอบเส้น EMA 50/200 ในกรอบ M5/M15/M30
+หน้าที่ของคุณคือจับจังหวะราคย่อตัวมาทดสอบเส้น EMA 50/200 ในกรอบ M5/M15/M30
 ตรวจสอบสัญญาณ Rejection หรือดึงกลับฝั่งเดียวกันกับแนวโน้มหลัก
 ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Limit Order ที่ได้เปรียบ และระดับ SL ใต้เส้น EMA หรือใต้สวิงโลว์หลัก"""
             elif strat == "BREAKOUT":
@@ -728,64 +743,54 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
                 {"role": "system", "content": agent_system},
                 {"role": "user", "content": agent_user}
             ], json_response=False, category="analysis")
-            strat_reports_list.append(f"🔍 **[ผลวิเคราะห์จาก {agent_name} ({strat})]**\n{report}")
-        
-        strat_report_combined = "\n\n".join(strat_reports_list)
-        
-        # --- ขั้นตอนที่ 3: สรุปมติและเปิดออเดอร์โดย Scalp Master CIO ---
-        # CIO จะนำผลวิเคราะห์ของทุกกลยุทธ์ที่ประเมินมาเปรียบเทียบหาจุดที่ได้เปรียบสูงสุด
-        cio_system = f"""คุณคือ Scalp Master / CIO Consensus ของกองทุนเทรดสั้น
-หน้าที่ของคุณคือรับรายงานและสถิติด้านล่าง สังเคราะห์การตัดสินใจจัดการพอร์ตและคำสั่งซื้อขายแบบ JSON โครงสร้างนี้เท่านั้น:
+            
+            # --- ขั้นตอนที่ 4: รันบอท CIO ตัดสินใจวิเคราะห์หาผลสรุปของกลยุทธ์ย่อยตัวนี้ (เดี่ยวๆ) ---
+            cio_system = f"""คุณคือ Scalp Master / CIO Consensus ของกองทุนเทรดสั้น
+หน้าที่ของคุณคือประเมินแผนการเทรดของกลยุทธ์ย่อย {strat} และสังเคราะห์การตัดสินใจจัดการพอร์ตและคำสั่งซื้อขายแบบ JSON โครงสร้างนี้เท่านั้น:
 {{
   "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CANCEL" | "CANCEL_AND_NEW",
   "ticket": int_หรือ_string_หรือ_null, // ใส่ Ticket ID ของคำสั่งล่วงหน้า (Pending Order) ที่ต้องการจัดการ (หากไม่มีให้ใส่ null)
-  "hold_minutes": 5 | 10 | 15 | 30, // ในโหมด Scalping หากตอบ HOLD ให้เลือกพักวิเคราะห์ 5, 10, 15 หรือ 30 นาที หากไม่ใช่ HOLD ให้ระบุเป็น null
+  "hold_minutes": 5 | 10 | 15 | 30, // ในโหมด Scalping หากตอบ HOLD หรือข้ามรอบ ให้เลือกเวลาพักวิเคราะห์ 5, 10, 15 หรือ 30 นาที
   "lot": float,
-  "entry": float_หรือ_null, // เพื่อป้องกันการได้จุดเข้าตลาดที่แย่ (Bad entry) สำหรับกลยุทธ์สเกลปิ้งทองคำ:
-                            // ให้เปรียบเทียบผลวิเคราะห์ของกลยุทธ์ย่อยทั้งหลายด้านล่าง แล้วเคาะเลือกจุดเข้า (Pending Order) ที่ได้เปรียบที่สุด 1 จุด
-                            // เช่น หากเลือกแผนย่อช้อนซื้อ ให้ตั้งราคาแบบ Limit (BUY ต่ำกว่าราคาตลาด) 
-                            // หากเลือกแผนราคาทะลุวิ่งตามแนวต้าน ให้ตั้งราคาแบบ Stop (BUY สูงกว่าราคาตลาด)
-                            // กรุณาระบุราคาจุดเข้าดังกล่าวลงในช่อง entry (หรือระบุ null หากต้องการยิงทันทีแบบ Market Price ซึ่งไม่แนะนำ)
+  "entry": float_หรือ_null, // เพื่อป้องกันการได้จุดเข้าตลาดที่แย่ (Bad entry):
+                            // ให้กำหนดระดับตั้ง Pending Order (Limit/Stop) ที่เหมาะสม
+                            // เช่น หากวางช้อนซื้อแนวรับของ Pullback/Reversion ให้ใช้แบบ Limit (BUY ต่ำกว่าตลาด)
+                            // หากวางดักทะลุกรอบเบรคเอาต์ ให้ใช้แบบ Stop (BUY สูงกว่าตลาด)
+                            // ระบุราคาดังกล่าวลงในช่อง entry (หรือระบุ null หากต้องการใช้ Market Price ซึ่งไม่แนะนำ)
   "sl": float_หรือ_null,
   "tp": float_หรือ_null,
-  "reasoning": "ประโยคสรุปการเลือกแผนการเทรดโดยเปรียบเทียบระหว่างหลายกลยุทธ์ย่อยที่ถูกส่งเข้ามาวิเคราะห์"
+  "reasoning": "ประโยคอธิบายสั้นๆ เกี่ยวกับการตัดสินใจ"
 }}
 
 กติกา:
 1. ปฏิบัติตามมติของ Market Regime เสมอ (Regime ปัจจุบัน: {regime_report.get('regime') if regime_report else 'Uncertain'})
-2. หากมีคำสั่งล่วงหน้า (Pending Order) เปิดค้างอยู่ (ข้อมูลด้านล่าง) คุณสามารถเลือก action เป็น:
-   - "HOLD": ถือคำสั่งล่วงหน้านี้ต่อตามเดิม
-   - "MODIFY": แก้ไขราคาเข้า (entry), SL หรือ TP ของตั๋วใบนี้ (ระบุเลข ticket ให้ถูกต้อง)
-   - "CANCEL": ยกเลิกคำสั่งล่วงหน้านี้ออกไปก่อนชั่วคราว
-   - "CANCEL_AND_NEW": ยกเลิกคำสั่งเดิมแล้วต้องการยื่นตั้งคำสั่งล่วงหน้าอันใหม่ทันที
-3. ลิสต์กลยุทธ์ย่อยสเกลปิ้งที่ได้รับการหยิบมาวิเคราะห์ในรอบนี้คือ: {', '.join(selected_strats)}
-4. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณมาตามความเสี่ยง 1% คือ {final_lot}
-5. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำห่างประมาณ: {sl_distance_usd:.2f} USD)"""
+2. หากมีคำสั่งล่วงหน้า (Pending Order) เปิดค้างอยู่ของกลยุทธ์นี้ (ข้อมูลด้านล่าง) คุณสามารถเลือก action เป็น HOLD, MODIFY, CANCEL, CANCEL_AND_NEW
+3. ล็อตสูงสุดจำกัดที่ {max_allowed_lot} ล็อตที่คำนวณมาตามความเสี่ยง 1% คือ {final_lot}
+4. ระยะ TP แนะนำห่าง 1.5 - 2 เท่าของระยะ SL แนะนำ (SL แนะนำห่างประมาณ: {sl_distance_usd:.2f} USD)"""
 
-        pending_str = json.dumps(pending_orders, indent=2) if pending_orders else "ไม่มีคำสั่งล่วงหน้าค้างอยู่"
-        cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
+            sub_pendings = pending_orders.get(strat, []) if pending_orders else []
+            pending_str = json.dumps(sub_pendings, indent=2) if sub_pendings else "ไม่มีคำสั่งล่วงหน้าของกลยุทธ์นี้ค้างอยู่"
+            
+            cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol}: {current_price:.2f}
 รายงานสภาวะตลาดส่วนกลาง: {json.dumps(regime_report, indent=2)}
-รายงานคำสั่งล่วงหน้า (Pending Orders) ของกลยุทธ์ Scalping ที่ยังไม่ทำงาน:
+รายงานคำสั่งล่วงหน้า (Pending Orders) ของกลยุทธ์ {strat} ที่ยังไม่ทำงาน:
 {pending_str}
 
-รายงานกลยุทธ์ย่อยสเกลปิ้งที่ผ่านการคัดเลือกเบื้องต้น: {', '.join(selected_strats)} ({strat_reason})
-รายงาน Micro Trend Analyst: {trend_report}
-รายงานจากโบรกเกอร์ย่อยแต่ละกลยุทธ์:
-{strat_report_combined}
+รายงานสรุปแนวโน้ม Micro Trend Analyst: {trend_report}
+รายงานวิเคราะห์จาก {agent_name}: {report}
 {reflection_context}
 
-จงตอบสรุปผลการเทรดแบบ Scalping ในรูปแบบ JSON:"""
+จงตอบสรุปผลการเทรดแบบ Scalping (กลยุทธ์ {strat}) ในรูปแบบ JSON:"""
 
-        logging.info("Scalping CIO: สรุปผลลัพธ์มติการเทรดแบบ Scalping...")
-        proposal = self._call_llm(model, [
-            {"role": "system", "content": cio_system},
-            {"role": "user", "content": cio_user}
-        ], json_response=True, category="analysis")
-        
-        # เรียก Reviewer ตรวจทานออเดอร์สุดท้ายเพื่อความปลอดภัยสูงสุด
-        final_decision = self.review_order(proposal, regime_report, trend_report, strat_report_combined, symbol)
-        return final_decision
-
+            logging.info(f"Scalping CIO ({strat}): สรุปผลลัพธ์มติการเทรด...")
+            proposal = self._call_llm(model, [
+                {"role": "system", "content": cio_system},
+                {"role": "user", "content": cio_user}
+            ], json_response=True, category="analysis")
+            
+            decisions_dict[strat] = proposal
+            
+        return decisions_dict
     def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
         """
         2) Day Trading Agent: Intraday trading, holds positions only within the day
@@ -888,8 +893,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             {"role": "user", "content": cio_user}
         ], json_response=True, category="analysis")
         
-        final_decision = self.review_order(proposal, regime_report, trend_report, range_report, symbol)
-        return final_decision
+        return proposal
 
     def analyze_swingtrading(self, df_4h, df_1d, df_1w, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
         """
@@ -994,4 +998,3 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         final_decision = self.review_order(proposal, regime_report, trend_report, fundamental_report, symbol)
         return final_decision
-

@@ -724,7 +724,13 @@ class TradingBotGUI:
             mode = self.var_mode.get()
             try:
                 # แมพป้ายชื่อเพื่อแสดงผลกลยุทธ์ให้ถูกต้อง
-                magic_map = {}
+                magic_map = {
+                    1001: "SCALP_PULLBACK",
+                    1002: "SCALP_BREAKOUT",
+                    1003: "SCALP_MEAN_REVERSION",
+                    1004: "SCALP_LIQUIDITY_SWEEP",
+                    1005: "SCALP_MOMENTUM"
+                }
                 for name, s_dict in self.strat_vars.items():
                     try:
                         magic_map[int(s_dict["magic"].get())] = name.upper()
@@ -753,7 +759,10 @@ class TradingBotGUI:
                     for name in ["scalping", "daytrading", "swingtrading"]:
                         try:
                             mag = int(self.strat_vars[name]["magic"].get())
-                            strat_hist = [t for t in history if t.get("magic") == mag]
+                            if name == "scalping":
+                                strat_hist = [t for t in history if t.get("magic") in [mag, 1001, 1002, 1003, 1004, 1005]]
+                            else:
+                                strat_hist = [t for t in history if t.get("magic") == mag]
                             metrics = PerformanceTracker.calculate_metrics(strat_hist)
                             self.root.after(0, lambda n=name, m=metrics: self.refresh_performance_metrics(n, m))
                         except Exception:
@@ -787,7 +796,10 @@ class TradingBotGUI:
                         for name in ["scalping", "daytrading", "swingtrading"]:
                             try:
                                 mag = int(self.strat_vars[name]["magic"].get())
-                                strat_hist = [t for t in history if t.get("magic") == mag]
+                                if name == "scalping":
+                                    strat_hist = [t for t in history if t.get("magic") in [mag, 1001, 1002, 1003, 1004, 1005]]
+                                else:
+                                    strat_hist = [t for t in history if t.get("magic") == mag]
                                 metrics = PerformanceTracker.calculate_metrics(strat_hist)
                                 self.root.after(0, lambda n=name, m=metrics: self.refresh_performance_metrics(n, m))
                             except Exception:
