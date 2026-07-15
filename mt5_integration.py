@@ -284,6 +284,25 @@ class MT5Integration:
         final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
         final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
         
+        # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
+        ref_price = float(entry) if entry is not None else (ask_price if direction == "BUY" else bid_price)
+        if direction == "BUY":
+            if final_sl > 0.0 and final_sl >= ref_price:
+                if final_tp > 0.0 and final_tp <= ref_price:
+                    final_sl, final_tp = final_tp, final_sl
+                else:
+                    final_sl = 0.0
+            if final_tp > 0.0 and final_tp <= ref_price:
+                final_tp = 0.0
+        else: # SELL
+            if final_sl > 0.0 and final_sl <= ref_price:
+                if final_tp > 0.0 and final_tp >= ref_price:
+                    final_sl, final_tp = final_tp, final_sl
+                else:
+                    final_sl = 0.0
+            if final_tp > 0.0 and final_tp >= ref_price:
+                final_tp = 0.0
+        
         # คำนวณระยะห่างขั้นต่ำตาม Stops Level เพื่อความปลอดภัยในการตั้ง Pending Order
         min_stop_distance = stops_level * point
         
@@ -553,7 +572,7 @@ class MT5Integration:
         return {"status": "SUCCESS"}
 
     def modify_pending_order(self, ticket, price, sl=None, tp=None):
-        """แก้ไขราคาเข้า จุด SL หรือ TP ของคำสั่งซื้อขายล่วงหน้า (Pending Order)"""
+        """แก้ไขราคาเข้า จุด SL หรือ TP ของคำสั่งซื้อขายล่วงหน้า (Pending Order) พร้อมแปลงประเภทอัตโนมัติหากราคาพ้นราคาตลาด"""
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
@@ -570,10 +589,71 @@ class MT5Integration:
         digits = sym_info.digits
         tick_size = sym_info.trade_tick_size
         
-        final_price = round(round(float(price) / tick_size) * tick_size, digits)
-        final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
-        final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
+        price_info = self.get_current_price(symbol)
+        if not price_info:
+            return {"status": "ERROR", "message": "ไม่สามารถอ่านราคาปัจจุบันได้"}
+            
+        bid_price = price_info["bid"]
+        ask_price = price_info["ask"]
         
+        # ตรวจสอบทิศทางจากของเดิม
+        is_buy = ord.type in [mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP]
+        direction = "BUY" if is_buy else "SELL"
+        
+        new_price = float(price)
+        final_price = round(round(new_price / tick_size) * tick_size, digits)
+        
+        # ตรวจสอบประเภทคำสั่งซื้อขายล่วงหน้าที่ต้องใช้จริงตามราคาใหม่
+        if is_buy:
+            required_type = mt5.ORDER_TYPE_BUY_LIMIT if final_price < ask_price else mt5.ORDER_TYPE_BUY_STOP
+        else:
+            required_type = mt5.ORDER_TYPE_SELL_LIMIT if final_price > bid_price else mt5.ORDER_TYPE_SELL_STOP
+            
+        # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
+        final_sl = float(sl) if sl else 0.0
+        final_tp = float(tp) if tp else 0.0
+        
+        if is_buy:
+            if final_sl > 0.0 and final_sl >= final_price:
+                if final_tp > 0.0 and final_tp <= final_price:
+                    final_sl, final_tp = final_tp, final_sl
+                else:
+                    final_sl = 0.0
+            if final_tp > 0.0 and final_tp <= final_price:
+                final_tp = 0.0
+        else: # SELL
+            if final_sl > 0.0 and final_sl <= final_price:
+                if final_tp > 0.0 and final_tp >= final_price:
+                    final_sl, final_tp = final_tp, final_sl
+                else:
+                    final_sl = 0.0
+            if final_tp > 0.0 and final_tp >= final_price:
+                final_tp = 0.0
+                
+        # ปรับทศนิยมตามโบรกเกอร์
+        final_sl = round(round(final_sl / tick_size) * tick_size, digits) if final_sl > 0.0 else 0.0
+        final_tp = round(round(final_tp / tick_size) * tick_size, digits) if final_tp > 0.0 else 0.0
+        
+        # หากจำเป็นต้องสลับประเภทคำสั่ง (เช่นจาก LIMIT เป็น STOP) เนื่องจากราคาตลาดวิ่งข้ามจุด
+        # ให้สลับลบออเดอร์เดิมและสั่งตั้งคำสั่งอันใหม่ของกลยุทธ์โดยทันทีเพื่อกันข้อผิดพลาด Invalid Price
+        if required_type != ord.type:
+            logging.info(f"ราคาใหม่ {final_price} ต้องการประเภทออเดอร์ {required_type} ซึ่งต่างจากเดิม {ord.type}: สั่งลบตั๋ว #{ticket} และตั้งใหม่")
+            cancel_res = self.cancel_pending_order(ticket)
+            if cancel_res.get("status") == "SUCCESS":
+                new_order_res = self.open_position(
+                    direction=direction,
+                    lot=ord.volume_current,
+                    sl=final_sl if final_sl > 0.0 else None,
+                    tp=final_tp if final_tp > 0.0 else None,
+                    entry=final_price,
+                    symbol=symbol,
+                    magic=ord.magic
+                )
+                return new_order_res
+            else:
+                return cancel_res
+                
+        # หากประเภทออเดอร์ยังสอดคล้อง ดำเนินการปรับปรุงตามเดิม
         request = {
             "action": mt5.TRADE_ACTION_MODIFY,
             "order": int(ticket),
@@ -588,8 +668,8 @@ class MT5Integration:
             logging.error(f"ไม่สามารถแก้ไขคำสั่งล่วงหน้า #{ticket} ได้: {result.comment}")
             return {"status": "FAILED", "message": result.comment}
             
-        logging.info(f"แก้ไขคำสั่งซื้อขายล่วงหน้า Ticket #{ticket} สำเร็จ")
-        return {"status": "SUCCESS"}
+        logging.info(f"แก้ไขคำสั่งล่วงหน้า #{ticket} สำเร็จผ่าน MT5! ราคา: {final_price} | SL: {final_sl} | TP: {final_tp}")
+        return {"status": "SUCCESS", "order_id": ticket}
 
     def get_trade_history(self, symbol="XAUUSD", days=7, magic=None):
         """ดึงประวัติการเทรดที่ปิดแล้วย้อนหลังสำหรับสินทรัพย์ที่กำหนด"""

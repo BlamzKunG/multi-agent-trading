@@ -112,7 +112,7 @@ class MockExchange:
 
     def open_position(self, direction, lot, sl=None, tp=None, entry=None, magic=123456, symbol="XAUUSD"):
         """
-        เปิดออเดอร์ใหม่ (Market Order) หรือตั้งคำสั่งรอดำเนินการ (Pending Order)
+        เปิดออเดอร์ใหม่ (Market Order) หรือตั้งคำสั่งรอดำเนินการ (Pending Order) ในระบบจำลองพอร์ต
         """
         if direction not in ['BUY', 'SELL']:
             return {"status": "ERROR", "message": "ทิศทางออเดอร์ไม่ถูกต้อง (ต้องเป็น BUY หรือ SELL)"}
@@ -120,13 +120,33 @@ class MockExchange:
         if self.current_price <= 0:
             return {"status": "ERROR", "message": "ราคาตลาดปัจจุบันไม่ถูกต้อง (ต้องมากกว่า 0)"}
             
+        # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
+        ref_price = float(entry) if entry is not None else self.current_price
+        final_sl = float(sl) if sl is not None else None
+        final_tp = float(tp) if tp is not None else None
+        
+        if direction == "BUY":
+            if final_sl is not None and final_sl >= ref_price:
+                if final_tp is not None and final_tp <= ref_price:
+                    final_sl, final_tp = final_tp, final_sl
+                else:
+                    final_sl = None
+            if final_tp is not None and final_tp <= ref_price:
+                final_tp = None
+        else: # SELL
+            if final_sl is not None and final_sl <= ref_price:
+                if final_tp is not None and final_tp >= ref_price:
+                    final_sl, final_tp = final_tp, final_sl
+                else:
+                    final_sl = None
+            if final_tp is not None and final_tp >= ref_price:
+                final_tp = None
+                
         is_pending = False
         ord_type = None
         
-        # ตัดสินใจว่าเป็น Pending Order หรือไม่
         if entry is not None:
             entry_val = float(entry)
-            # ถ้าราคาที่ส่งห่างราคาปัจจุบันเกิน 1.5 USD ถือเป็น Pending
             if abs(entry_val - self.current_price) > 1.50:
                 is_pending = True
                 if direction == "BUY":
@@ -135,7 +155,6 @@ class MockExchange:
                     ord_type = "SELL_LIMIT" if entry_val > self.current_price else "SELL_STOP"
 
         if is_pending:
-            # ลงทะเบียน Pending Order
             ord_id = str(uuid.uuid4())[:8]
             pending_order = {
                 "id": ord_id,
@@ -143,15 +162,14 @@ class MockExchange:
                 "type": ord_type,
                 "lot": float(lot),
                 "entry_price": float(entry),
-                "sl": float(sl) if sl is not None else None,
-                "tp": float(tp) if tp is not None else None,
+                "sl": final_sl,
+                "tp": final_tp,
                 "magic": int(magic)
             }
             self.pending_orders[ord_id] = pending_order
-            logging.info(f"ตั้งออเดอร์ล่วงหน้าสำเร็จ: {ord_type} {lot} Lot ที่ราคา {entry} | SL: {sl}, TP: {tp} | Magic: {magic}")
+            logging.info(f"ตั้งออเดอร์ล่วงหน้าสำเร็จ: {ord_type} {lot} Lot ที่ราคา {entry} | SL: {final_sl}, TP: {final_tp} | Magic: {magic}")
             return {"status": "SUCCESS", "order_id": ord_id, "is_pending": True}
             
-        # เปิดออเดอร์ทันที (Market Order)
         required_margin = (self.contract_size * lot * self.current_price) / self.leverage
         total_used_margin = sum((self.contract_size * pos['lot'] * pos['entry_price']) / self.leverage for pos in self.positions.values())
         free_margin = self.equity - total_used_margin - required_margin
@@ -168,18 +186,16 @@ class MockExchange:
             "direction": direction,
             "lot": float(lot),
             "entry_price": self.current_price,
-            "sl": float(sl) if sl is not None else None,
-            "tp": float(tp) if tp is not None else None,
+            "sl": final_sl,
+            "tp": final_tp,
             "pnl": 0.0,
             "margin": required_margin,
             "open_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "magic": int(magic)
         }
-        
         self.positions[pos_id] = position
-        logging.info(f"เปิดออเดอร์ใหม่สำเร็จ: {direction} {lot} Lot ที่ราคา {self.current_price} | SL: {sl}, TP: {tp} | Magic: {magic}")
-        return {"status": "SUCCESS", "position": position, "is_pending": False}
-
+        logging.info(f"เปิดตำแหน่งสำเร็จ: {direction} {lot} Lot ที่ราคา {self.current_price} | SL: {final_sl}, TP: {final_tp} | Magic: {magic}")
+        return {"status": "SUCCESS", "order_id": pos_id, "is_pending": False}
     def get_pending_orders(self, symbol="XAUUSD", magic=None):
         """ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) ที่ยังไม่ถูกจับคู่"""
         orders_list = list(self.pending_orders.values())
@@ -197,19 +213,45 @@ class MockExchange:
         return {"status": "ERROR", "message": f"ไม่พบคำสั่งล่วงหน้า #{ticket}"}
 
     def modify_pending_order(self, ticket, price, sl=None, tp=None):
-        """แก้ไขราคาเข้า หรือ SL/TP ของออเดอร์ล่วงหน้า"""
+        """แก้ไขราคาเข้า หรือ SL/TP ของออเดอร์ล่วงหน้าในระบบจำลองพอร์ต"""
         ticket_str = str(ticket)
         if ticket_str in self.pending_orders:
             ord = self.pending_orders[ticket_str]
-            ord["entry_price"] = float(price)
-            if sl is not None:
-                ord["sl"] = float(sl)
-            if tp is not None:
-                ord["tp"] = float(tp)
-            logging.info(f"แก้ไขคำสั่งซื้อขายล่วงหน้า #{ticket} สำเร็จ | ราคาเข้าใหม่: {price}, SL: {sl}, TP: {tp}")
+            new_price = float(price)
+            ord["entry_price"] = new_price
+            
+            # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
+            final_sl = float(sl) if sl is not None else None
+            final_tp = float(tp) if tp is not None else None
+            
+            if ord["direction"] == "BUY":
+                if final_sl is not None and final_sl >= new_price:
+                    if final_tp is not None and final_tp <= new_price:
+                        final_sl, final_tp = final_tp, final_sl
+                    else:
+                        final_sl = None
+                if final_tp is not None and final_tp <= new_price:
+                    final_tp = None
+            else: # SELL
+                if final_sl is not None and final_sl <= new_price:
+                    if final_tp is not None and final_tp >= new_price:
+                        final_sl, final_tp = final_tp, final_sl
+                    else:
+                        final_sl = None
+                if final_tp is not None and final_tp >= new_price:
+                    final_tp = None
+                    
+            # สลับแปลงประเภทออเดอร์ (Limit <-> Stop) อัตโนมัติหากราคาพ้นราคาตลาดจำลอง
+            if ord["direction"] == "BUY":
+                ord["type"] = "BUY_LIMIT" if new_price < self.current_price else "BUY_STOP"
+            else:
+                ord["type"] = "SELL_LIMIT" if new_price > self.current_price else "SELL_STOP"
+                
+            ord["sl"] = final_sl
+            ord["tp"] = final_tp
+            logging.info(f"แก้ไขคำสั่งซื้อขายล่วงหน้า #{ticket} สำเร็จ | ราคาเข้าใหม่: {new_price} ({ord['type']}), SL: {final_sl}, TP: {final_tp}")
             return {"status": "SUCCESS"}
         return {"status": "ERROR", "message": f"ไม่พบคำสั่งล่วงหน้า #{ticket}"}
-
     def close_position(self, pos_id):
         """ปิดออเดอร์ที่ระบุด้วยราคาตลาดปัจจุบัน"""
         if pos_id not in self.positions:
