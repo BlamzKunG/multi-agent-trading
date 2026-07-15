@@ -123,7 +123,8 @@ class MockExchange:
         is_pending = True
         
         if entry is None:
-            min_dist = 0.50 if "XAU" in symbol.upper() else 5.0
+            # Fallback ตั้งห่างราคาตลาดปัจจุบันในระยะที่มีนัยสำคัญจริง
+            min_dist = 3.50 if "XAU" in symbol.upper() else (80.0 if "BTC" in symbol.upper() else 10.0)
             if direction == "BUY":
                 entry_val = self.current_price - min_dist
             else:

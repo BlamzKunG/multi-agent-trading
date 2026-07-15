@@ -284,8 +284,8 @@ class MT5Integration:
         is_pending = True
         
         if entry is None:
-            # Fallback หากโมเดลลืมใส่ราคาเข้า ให้ตั้ง Pending ห่างจากราคาตลาดเล็กน้อย
-            min_dist = max(stops_level * point, 0.50 if "XAU" in symbol.upper() else 5.0)
+            # Fallback หากโมเดลลืมราคาเข้า ให้ตั้งราคา Pending ห่างจากตลาดในระยะที่มีนัยสำคัญเชิงเทคนิค
+            min_dist = 3.50 if "XAU" in symbol.upper() else (80.0 if "BTC" in symbol.upper() else 10.0)
             if direction == "BUY":
                 entry_val = ask_price - min_dist
             else:
