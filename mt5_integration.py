@@ -251,19 +251,18 @@ class MT5Integration:
 
     def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD", magic=123456):
         """
-        ส่งคำสั่งเปิดออเดอร์ (Market Order) หรือ ตั้งคำสั่งรอดำเนินการ (Pending Order)
+        ส่งคำสั่งซื้อขายล่วงหน้า (Pending Order) เท่านั้น - ปิดการใช้ Market Order เพื่อป้องกันราคาเสียเปรียบ
         - direction: 'BUY' หรือ 'SELL'
         - lot: ขนาดสัญญา
         - sl: จุดตัดขาดทุน
         - tp: จุดทำกำไร
-        - entry: ราคาที่ต้องการเข้าเทรด (หากละเว้นไว้ จะเปิดออเดอร์ที่ราคาปัจจุบันทันที)
+        - entry: ราคาตั้งซื้อขายล่วงหน้า (หากเป็น None จะตั้ง Pending ราคาเบี่ยงเบนห่างราคาตลาดเล็กน้อย)
         - magic: หมายเลข Magic Number ของ Agent
         """
         symbol = self.resolve_symbol(symbol)
         if not self.connect():
             return {"status": "ERROR", "message": "ไม่ได้เชื่อมต่อ MT5"}
             
-        # ดึงราคาและข้อมูลของโบรกเกอร์เกี่ยวกับสัญลักษณ์
         sym_info = mt5.symbol_info(symbol)
         if not sym_info:
             return {"status": "ERROR", "message": f"ไม่พบข้อมูลคู่เงิน {symbol} บน MT5"}
@@ -279,75 +278,76 @@ class MT5Integration:
             
         bid_price = price_info["bid"]
         ask_price = price_info["ask"]
+        market_compare_price = ask_price if direction == "BUY" else bid_price
         
+        # บังคับใช้คำสั่งล่วงหน้า (Pending Order) เสมอ
+        is_pending = True
+        
+        if entry is None:
+            # Fallback หากโมเดลลืมใส่ราคาเข้า ให้ตั้ง Pending ห่างจากราคาตลาดเล็กน้อย
+            min_dist = max(stops_level * point, 0.50 if "XAU" in symbol.upper() else 5.0)
+            if direction == "BUY":
+                entry_val = ask_price - min_dist
+            else:
+                entry_val = bid_price + min_dist
+        else:
+            entry_val = float(entry)
+            
+        target_price = round(round(entry_val / tick_size) * tick_size, digits)
+        
+        # ปรับแต่งระดับราคาให้พ้นระยะ Stops Level ขั้นต่ำเพื่อป้องกัน Broker Reject
+        min_stop_distance = stops_level * point
+        if abs(target_price - market_compare_price) < min_stop_distance:
+            if direction == "BUY":
+                if target_price < market_compare_price:
+                    target_price = market_compare_price - min_stop_distance
+                else:
+                    target_price = market_compare_price + min_stop_distance
+            else: # SELL
+                if target_price > market_compare_price:
+                    target_price = market_compare_price + min_stop_distance
+                else:
+                    target_price = market_compare_price - min_stop_distance
+            target_price = round(round(target_price / tick_size) * tick_size, digits)
+            
         # ปรับทศนิยมตัวแปร SL และ TP ให้สอดคล้องกับโบรกเกอร์
         final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
         final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
         
         # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
-        ref_price = float(entry) if entry is not None else (ask_price if direction == "BUY" else bid_price)
         if direction == "BUY":
-            if final_sl > 0.0 and final_sl >= ref_price:
-                if final_tp > 0.0 and final_tp <= ref_price:
+            if final_sl > 0.0 and final_sl >= target_price:
+                if final_tp > 0.0 and final_tp <= target_price:
                     final_sl, final_tp = final_tp, final_sl
                 else:
                     final_sl = 0.0
-            if final_tp > 0.0 and final_tp <= ref_price:
+            if final_tp > 0.0 and final_tp <= target_price:
                 final_tp = 0.0
         else: # SELL
-            if final_sl > 0.0 and final_sl <= ref_price:
-                if final_tp > 0.0 and final_tp >= ref_price:
+            if final_sl > 0.0 and final_sl <= target_price:
+                if final_tp > 0.0 and final_tp >= target_price:
                     final_sl, final_tp = final_tp, final_sl
                 else:
                     final_sl = 0.0
-            if final_tp > 0.0 and final_tp >= ref_price:
+            if final_tp > 0.0 and final_tp >= target_price:
                 final_tp = 0.0
-        
-        # คำนวณระยะห่างขั้นต่ำตาม Stops Level เพื่อความปลอดภัยในการตั้ง Pending Order
-        min_stop_distance = stops_level * point
-        
-        # กำหนด Deviation Limit ตามประเภทสินทรัพย์ (Bitcoin ผันผวนสูงและราคาสูงกว่าทองมาก)
-        if "BTC" in symbol.upper():
-            deviation_limit = max(min_stop_distance * 1.5, 50.0)
-        else:
-            deviation_limit = max(min_stop_distance * 1.5, 1.50)
-            
-        is_pending = False
-        order_type = None
-        target_price = None
-        
-        if entry is not None:
-            entry_val = float(entry)
-            market_compare_price = ask_price if direction == "BUY" else bid_price
-            
-            # ถ้าราคาเข้าที่เสนอมา ห่างจากราคาตลาดปัจจุบันเกิน Deviation Limit ให้ตั้งเป็น Pending Order
-            if abs(entry_val - market_compare_price) > deviation_limit:
-                is_pending = True
-                target_price = round(round(entry_val / tick_size) * tick_size, digits)
                 
-                if direction == "BUY":
-                    if target_price < ask_price:
-                        order_type = mt5.ORDER_TYPE_BUY_LIMIT  # ซื้อราคาต่ำกว่าตลาด
-                        logging.info(f"ราคาเสนอซื้อ ({target_price}) ต่ำกว่าราคาตลาด Ask ({ask_price}): เลือกใช้ BUY LIMIT")
-                    else:
-                        order_type = mt5.ORDER_TYPE_BUY_STOP   # ซื้อราคาสูงกว่าตลาด (Breakout)
-                        logging.info(f"ราคาเสนอซื้อ ({target_price}) สูงกว่าราคาตลาด Ask ({ask_price}): เลือกใช้ BUY STOP")
-                else:  # SELL
-                    if target_price > bid_price:
-                        order_type = mt5.ORDER_TYPE_SELL_LIMIT # ขายราคาสูงกว่าตลาด
-                        logging.info(f"ราคาเสนอขาย ({target_price}) สูงกว่าราคาตลาด Bid ({bid_price}): เลือกใช้ SELL LIMIT")
-                    else:
-                        order_type = mt5.ORDER_TYPE_SELL_STOP  # ขายราคาต่ำกว่าตลาด (Breakout)
-                        logging.info(f"ราคาเสนอขาย ({target_price}) ต่ำกว่าราคาตลาด Bid ({bid_price}): เลือกใช้ SELL STOP")
+        # กำหนดประเภทคำสั่งซื้อขายล่วงหน้าตามระดับราคาเทียบกับตลาดปัจจุบัน
+        if direction == "BUY":
+            if target_price < ask_price:
+                order_type = mt5.ORDER_TYPE_BUY_LIMIT
+                logging.info(f"ราคาเสนอซื้อ ({target_price}) ต่ำกว่าราคาตลาด Ask ({ask_price}): เลือกใช้ BUY LIMIT")
             else:
-                logging.info(f"ราคาเสนอเข้า ({entry_val}) ใกล้เคียงราคาตลาดปัจจุบัน (ห่างไม่เกิน {deviation_limit:.2f}): สลับมาเข้าตลาดทันที (Market Order)")
+                order_type = mt5.ORDER_TYPE_BUY_STOP
+                logging.info(f"ราคาเสนอซื้อ ({target_price}) สูงกว่าราคาตลาด Ask ({ask_price}): เลือกใช้ BUY STOP")
+        else: # SELL
+            if target_price > bid_price:
+                order_type = mt5.ORDER_TYPE_SELL_LIMIT
+                logging.info(f"ราคาเสนอขาย ({target_price}) สูงกว่าราคาตลาด Bid ({bid_price}): เลือกใช้ SELL LIMIT")
+            else:
+                order_type = mt5.ORDER_TYPE_SELL_STOP
+                logging.info(f"ราคาเสนอขาย ({target_price}) ต่ำกว่าราคาตลาด Bid ({bid_price}): เลือกใช้ SELL STOP")
                 
-        if not is_pending:
-            # เปิดออเดอร์ทันที (Market Order)
-            order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
-            target_price = ask_price if direction == "BUY" else bid_price
-            target_price = round(round(target_price / tick_size) * tick_size, digits)
-            
         request = {
             "symbol": symbol,
             "volume": float(lot),
@@ -358,15 +358,10 @@ class MT5Integration:
             "deviation": 20,
             "magic": int(magic),
             "comment": "LLM Auto Trade",
-            "type_time": mt5.ORDER_TIME_GTC
+            "type_time": mt5.ORDER_TIME_GTC,
+            "action": mt5.TRADE_ACTION_PENDING
         }
         
-        if is_pending:
-            request["action"] = mt5.TRADE_ACTION_PENDING
-        else:
-            request["action"] = mt5.TRADE_ACTION_DEAL
-            request["type_filling"] = mt5.ORDER_FILLING_IOC
-            
         # ส่งคำสั่งไปยังโบรกเกอร์
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -374,10 +369,8 @@ class MT5Integration:
             logging.error(err_msg)
             return {"status": "FAILED", "message": err_msg}
             
-        order_text = "Pending Order" if is_pending else "Market Order"
-        logging.info(f"ส่ง {order_text} สำเร็จผ่าน MT5! Ticket: {result.order} ที่ราคา {result.price}")
-        return {"status": "SUCCESS", "order_id": result.order, "is_pending": is_pending}
-
+        logging.info(f"ส่ง Pending Order สำเร็จผ่าน MT5! Ticket: {result.order} ที่ราคา {target_price}")
+        return {"status": "SUCCESS", "order_id": result.order, "is_pending": True}
     def close_position(self, ticket, symbol="XAUUSD"):
         """ปิดออเดอร์ที่ระบุด้วยตั๋ว Ticket ID"""
         symbol = self.resolve_symbol(symbol)
