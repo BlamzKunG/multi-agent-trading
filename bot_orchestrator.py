@@ -259,13 +259,13 @@ class TradingBotOrchestrator:
             trail_dist = atr * float(strat.get("trailing_distance_mult", 1.5))
             trail_step = atr * float(strat.get("trailing_step_mult", 0.3))
             
-            current_price = self.data_feed.get_current_price() or 0.0
+            current_price = float(self.data_feed.get_current_price() or 0.0)
             
             for pos in open_positions:
                 pos_id = pos['id']
                 direction = pos['direction']
                 entry_price = float(pos['entry_price'])
-                current_sl = pos.get('sl', 0.0)
+                current_sl = float(pos.get('sl', 0.0) or 0.0)
                 
                 trail_updated = False
                 new_sl = None
@@ -273,20 +273,21 @@ class TradingBotOrchestrator:
                 if direction == 'BUY':
                     if current_price - entry_price >= activation_dist:
                         target_sl = current_price - trail_dist
-                        if current_sl is None or current_sl == 0 or target_sl > float(current_sl):
-                            if current_sl is None or current_sl == 0 or (target_sl - float(current_sl)) >= trail_step:
+                        if current_sl == 0.0 or target_sl > current_sl:
+                            if current_sl == 0.0 or (target_sl - current_sl) >= trail_step:
                                 new_sl = target_sl
                                 trail_updated = True
                 elif direction == 'SELL':
                     if entry_price - current_price >= activation_dist:
                         target_sl = current_price + trail_dist
-                        if current_sl is None or current_sl == 0 or target_sl < float(current_sl):
-                            if current_sl is None or current_sl == 0 or (float(current_sl) - target_sl) >= trail_step:
+                        if current_sl == 0.0 or target_sl < current_sl:
+                            if current_sl == 0.0 or (current_sl - target_sl) >= trail_step:
                                 new_sl = target_sl
                                 trail_updated = True
                                 
                 if trail_updated:
-                    self.exchange.modify_position(pos_id, sl=new_sl, tp=pos.get('tp'))
+                    # เรียก modify_sl_tp ซึ่งเป็นชื่อฟังก์ชันที่ถูกต้องใน exchange_sim.py
+                    self.exchange.modify_sl_tp(pos_id, new_sl=new_sl, new_tp=pos.get('tp'))
                     logging.info(f"📈 [Sim Mode ATR Trailing Stop] เลื่อน SL ออเดอร์ #{pos_id} ไปที่ {new_sl:.2f}")
                     msg = (
                         f"📈 **[Sim Mode - ATR Trailing Stop]**\n"
@@ -298,7 +299,6 @@ class TradingBotOrchestrator:
                     pos['sl'] = new_sl
         else:
             logging.info(f"ถือออเดอร์ {len(open_positions)} ไม้ของกลยุทธ์ {strategy_name} ต่อไปโดยไม่มี Trailing Stop")
-
     def execute_decision(self, strat_name, decision, magic_number, pending_orders, strat_cfg):
         """ดำเนินการจัดการและเปิดออเดอร์คำสั่งซื้อขายในพอร์ตจำลอง"""
         action = decision.get("action")

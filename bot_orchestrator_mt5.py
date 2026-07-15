@@ -272,14 +272,19 @@ class MT5TradingBotOrchestrator:
             trail_dist = atr * float(strat.get("trailing_distance_mult", 1.5))
             trail_step = atr * float(strat.get("trailing_step_mult", 0.3))
             
-            price_info = self.mt5_bridge.get_current_price(self.symbol) or {"price": 0.0}
-            current_price = price_info.get("price", 0.0)
+            price_info = self.mt5_bridge.get_current_price(self.symbol) or {"price": 0.0, "bid": 0.0, "ask": 0.0}
             
             for pos in open_positions:
                 pos_id = pos['id']
                 direction = pos['direction']
                 entry_price = float(pos['entry_price'])
-                current_sl = pos.get('sl', 0.0)
+                current_sl = float(pos.get('sl', 0.0) or 0.0)
+                
+                # ดึงราคารายฝั่งจริงในการปิดตำแหน่ง (Bid สำหรับ Buy, Ask สำหรับ Sell)
+                if direction == 'BUY':
+                    current_price = price_info.get("bid", price_info.get("price", 0.0))
+                else:
+                    current_price = price_info.get("ask", price_info.get("price", 0.0))
                 
                 trail_updated = False
                 new_sl = None
@@ -287,15 +292,15 @@ class MT5TradingBotOrchestrator:
                 if direction == 'BUY':
                     if current_price - entry_price >= activation_dist:
                         target_sl = current_price - trail_dist
-                        if current_sl is None or current_sl == 0 or target_sl > float(current_sl):
-                            if current_sl is None or current_sl == 0 or (target_sl - float(current_sl)) >= trail_step:
+                        if current_sl == 0.0 or target_sl > current_sl:
+                            if current_sl == 0.0 or (target_sl - current_sl) >= trail_step:
                                 new_sl = target_sl
                                 trail_updated = True
                 elif direction == 'SELL':
                     if entry_price - current_price >= activation_dist:
                         target_sl = current_price + trail_dist
-                        if current_sl is None or current_sl == 0 or target_sl < float(current_sl):
-                            if current_sl is None or current_sl == 0 or (float(current_sl) - target_sl) >= trail_step:
+                        if current_sl == 0.0 or target_sl < current_sl:
+                            if current_sl == 0.0 or (current_sl - target_sl) >= trail_step:
                                 new_sl = target_sl
                                 trail_updated = True
                                 
@@ -305,7 +310,8 @@ class MT5TradingBotOrchestrator:
                     if sym_info:
                         new_sl = round(round(new_sl / sym_info.trade_tick_size) * sym_info.trade_tick_size, sym_info.digits)
                         
-                    self.mt5_bridge.modify_sl_tp(pos_id, new_sl=new_sl)
+                    # เรียก modify_position ซึ่งเป็นชื่อฟังก์ชันที่ถูกต้องใน mt5_integration.py
+                    self.mt5_bridge.modify_position(pos_id, new_sl=new_sl, new_tp=pos.get('tp'))
                     logging.info(f"📈 [Live ATR Trailing Stop] เลื่อน SL ออเดอร์ #{pos_id} ไปที่ {new_sl:.2f}")
                     msg = (
                         f"📈 **[MT5 Live - ATR Trailing Stop]**\n"
@@ -317,7 +323,6 @@ class MT5TradingBotOrchestrator:
                     pos['sl'] = new_sl
         else:
             logging.info(f"Live: ถือออเดอร์ {len(open_positions)} ไม้ของกลยุทธ์ {strategy_name} ต่อไปโดยไม่มี Trailing Stop")
-
     def execute_decision(self, strat_name, decision, magic_number, pending_orders, strat_cfg):
         """ดำเนินการจัดการและเปิดออเดอร์คำสั่งซื้อขายตามการตัดสินใจ"""
         action = decision.get("action")
