@@ -686,46 +686,51 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             {"role": "user", "content": trend_user}
         ], json_response=False, category="management")
         
-        # Sub-agent 2: Price Action Sniper (รันแยกทีละกลยุทธ์แบบขนานและรวมรายงานเข้าด้วยกัน)
-        pa_reports_list = []
+        # Sub-agent 2: เรียกใช้บอทวิเคราะห์ย่อยตรงตามประเภทของกลยุทธ์ (รันแยกแบบขนานและรวมรายงานเข้าด้วยกัน)
+        strat_reports_list = []
         for strat in selected_strats:
             if strat == "TREND_PULLBACK":
-                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Trend Pullback) ของ {symbol}
+                agent_name = "Trend Pullback Agent"
+                agent_system = f"""คุณคือ Trend Pullback Agent ของ {symbol}
 หน้าที่ของคุณคือจับจังหวะราคาย่อตัวมาทดสอบเส้น EMA 50/200 ในกรอบ M5/M15/M30
 ตรวจสอบสัญญาณ Rejection หรือดึงกลับฝั่งเดียวกันกับแนวโน้มหลัก
 ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Limit Order ที่ได้เปรียบ และระดับ SL ใต้เส้น EMA หรือใต้สวิงโลว์หลัก"""
             elif strat == "BREAKOUT":
-                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Breakout) ของ {symbol}
+                agent_name = "Breakout Agent"
+                agent_system = f"""คุณคือ Breakout Agent ของ {symbol}
 หน้าที่ของคุณคือตรวจจับราคาปิดหลุดขอบเขต Swing High/Low ในอดีตของกรอบ M5/M15 พร้อมกับการขยายตัวของความผันผวน
 ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Stop Order เมื่อราคาเบรคทะลุ และระดับ SL บริเวณกึ่งกลางกรอบสวิงหรือระดับราคาเบรคเอาต์เดิม"""
             elif strat == "MEAN_REVERSION":
-                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Mean Reversion) ของ {symbol}
+                agent_name = "Mean Reversion Agent"
+                agent_system = f"""คุณคือ Mean Reversion Agent ของ {symbol}
 หน้าที่ของคุณคือตรวจสอบหาราคาที่เหยียดตัวออกจากเส้นค่าเฉลี่ย EMA 200 มากเกินไปในกรอบ M5/M15 ร่วมกับสัญญาณแท่งเทียนกลับตัวฝั่งตรงข้าม
 ส่งรายงาน (ไม่เกิน 3 บรรทัด) ชี้ราคาจุดตั้ง Limit Order สวนกลับ และจุด SL เหนือปลายไส้เทียนของแท่งกลับตัวล่าสุด"""
             elif strat == "LIQUIDITY_SWEEP":
-                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Liquidity Sweep) ของ {symbol}
+                agent_name = "Liquidity Sweep Agent"
+                agent_system = f"""คุณคือ Liquidity Sweep Agent ของ {symbol}
 หน้าที่ของคุณคือเฝ้าระวังจังหวะที่ราคากวาดผ่านแนวต้าน/รับสวิงหลัก (Stop Hunt) แล้วดึงกลับมาปิดในกรอบเดิมทิ้งไส้เทียนยาว Rejection wick
 ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Limit Order ดักกลับหัวหลังจากการกวาดสภาพคล่อง และ SL เหนือ/ใต้ปลายไส้เทียนที่กวาดไป"""
             else: # MOMENTUM_CONTINUATION
-                pa_system = f"""คุณคือ Price Action Sniper (กลยุทธ์ Momentum Continuation) ของ {symbol}
+                agent_name = "Momentum Continuation Agent"
+                agent_system = f"""คุณคือ Momentum Continuation Agent ของ {symbol}
 หน้าที่ของคุณคือวิเคราะห์ความลาดชันและการเรียงตัวของเนื้อแท่งเทียนปิดเต็ม (Marubozu) ที่ไร้การย่อตัว เพื่อเกาะแนวราคาตามกระแสเงินไหล
 ส่งรายงาน (ไม่เกิน 3 บรรทัด) แนะนำราคาจุดตั้ง Pending Order ตามน้ำทันที และระดับ SL ที่ปลายฐานแท่งเทียนล่าสุด"""
 
-            pa_user = f"""ราคาปัจจุบัน: {current_price:.2f}
+            agent_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 แท่งเทียน M5 ล่าสุด:
 {self._format_candles_brief(df_5m_pa, 50)}
 แท่งเทียน M1 ล่าสุด:
 {self._format_candles_brief(df_1m_pa, 30)}
-กรุณาวิเคราะห์พฤติกรรมราคาสไนเปอร์ตามกลยุทธ์ {strat}:"""
+กรุณาวิเคราะห์พฤติกรรมราคาสำหรับ {agent_name} ตามกลยุทธ์ {strat}:"""
             
-            logging.info(f"Scalping Sub-agent 2: เรียกใช้ Price Action Sniper ({strat})...")
+            logging.info(f"Scalping Sub-agent 2: เรียกใช้ {agent_name}...")
             report = self._call_llm(model, [
-                {"role": "system", "content": pa_system},
-                {"role": "user", "content": pa_user}
+                {"role": "system", "content": agent_system},
+                {"role": "user", "content": agent_user}
             ], json_response=False, category="analysis")
-            pa_reports_list.append(f"🔍 **[ผลวิเคราะห์สำหรับกลยุทธ์: {strat}]**\n{report}")
+            strat_reports_list.append(f"🔍 **[ผลวิเคราะห์จาก {agent_name} ({strat})]**\n{report}")
         
-        pa_report_combined = "\n\n".join(pa_reports_list)
+        strat_report_combined = "\n\n".join(strat_reports_list)
         
         # --- ขั้นตอนที่ 3: สรุปมติและเปิดออเดอร์โดย Scalp Master CIO ---
         # CIO จะนำผลวิเคราะห์ของทุกกลยุทธ์ที่ประเมินมาเปรียบเทียบหาจุดที่ได้เปรียบสูงสุด
@@ -765,8 +770,8 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 
 รายงานกลยุทธ์ย่อยสเกลปิ้งที่ผ่านการคัดเลือกเบื้องต้น: {', '.join(selected_strats)} ({strat_reason})
 รายงาน Micro Trend Analyst: {trend_report}
-รายงาน Price Action Sniper ของแต่ละกลยุทธ์เชิงเปรียบเทียบ:
-{pa_report_combined}
+รายงานจากโบรกเกอร์ย่อยแต่ละกลยุทธ์:
+{strat_report_combined}
 {reflection_context}
 
 จงตอบสรุปผลการเทรดแบบ Scalping ในรูปแบบ JSON:"""
@@ -778,7 +783,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ], json_response=True, category="analysis")
         
         # เรียก Reviewer ตรวจทานออเดอร์สุดท้ายเพื่อความปลอดภัยสูงสุด
-        final_decision = self.review_order(proposal, regime_report, trend_report, pa_report_combined, symbol)
+        final_decision = self.review_order(proposal, regime_report, trend_report, strat_report_combined, symbol)
         return final_decision
 
     def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
