@@ -474,17 +474,17 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         logging.info(f"ส่งสถานะออเดอร์ {position_details['id']} ให้ Manager Agent จัดการ {symbol} ด้วยโมเดล {model}...")
         return self._call_llm(model, messages, json_response=True, category="management")
 
-    def analyze_market_regime(self, df_5m, df_15m, df_1h, symbol="XAUUSD"):
+    def analyze_market_regime(self, df_fast, df_slow, df_macro, symbol="XAUUSD", num_fast=5, num_slow=3):
         """
         Market Regime Agent (วิเคราะห์จำแนกสภาวะตลาดหลัก)
         """
         model = self.analysis_model
         
-        df_5m_pa = self._analyze_price_action(df_5m)
-        df_15m_pa = self._analyze_price_action(df_15m)
+        df_fast_pa = self._analyze_price_action(df_fast)
+        df_slow_pa = self._analyze_price_action(df_slow)
         
-        current_price = float(df_5m_pa['close'].iloc[-1])
-        atr_5m = float(df_5m_pa['atr_14'].iloc[-1])
+        current_price = float(df_fast_pa['close'].iloc[-1])
+        atr_fast = float(df_fast_pa['atr_14'].iloc[-1])
         
         system_prompt = f"""คุณคือ Market Regime Agent หน้าที่ของคุณคือจำแนกสภาวะตลาดปัจจุบันของ {symbol}
 วิเคราะห์ความผันผวน ปริมาณแท่งเทียน และโครงสร้างการเคลื่อนที่ของราคาล่าสุด
@@ -504,18 +504,18 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
   "reason": "ประโยคอธิบายสั้นๆ เกี่ยวกับปัจจัยเชิงปริมาณและสถิติเทคนิคที่สังเกตได้"
 }}"""
 
-        def format_candles(df, num_candles=5):
+        def format_candles(df, num_candles):
             summary = ""
             for _, row in df.tail(num_candles).iterrows():
-                summary += f"- Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | ประเภท={row['candle_type']} | ขนาด={row['body_size']:.2f}\n"
+                summary += f"- Time={row['timestamp'].strftime('%d/%m %H:%M') if 'timestamp' in row else ''} Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | ประเภท={row['candle_type']} | ขนาด={row['body_size']:.2f}\n"
             return summary
 
         user_content = f"""ราคาปัจจุบัน: {current_price:.2f}
-ข้อมูลความผันผวนล่าสุด: ATR (5m) = {atr_5m:.2f}
-โครงสร้างราคาแท่งเทียน M5 ล่าสุด:
-{format_candles(df_5m_pa, 5)}
-โครงสร้างราคาแท่งเทียน M15 ล่าสุด:
-{format_candles(df_15m_pa, 3)}
+ข้อมูลความผันผวนล่าสุด: ATR = {atr_fast:.2f}
+โครงสร้างราคาแท่งเทียนกรอบเวลาเร็ว (Fast Frame) ย้อนหลัง {num_fast} แท่ง:
+{format_candles(df_fast_pa, num_fast)}
+โครงสร้างราคาแท่งเทียนกรอบเวลาช้า (Slow Frame) ย้อนหลัง {num_slow} แท่ง:
+{format_candles(df_slow_pa, num_slow)}
 
 กรุณาวิเคราะห์สภาวะตลาด (Market Regime) ล่าสุดออกมาเป็น JSON:"""
 
@@ -649,7 +649,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         selector_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 สภาวะตลาดหลัก (Market Regime): {json.dumps(regime_report, indent=2)}
 ประวัติแท่งเทียน M5 ล่าสุด:
-{self._format_candles_brief(df_5m_pa, 5)}
+{self._format_candles_brief(df_5m_pa, 50)}
 
 จงวิเคราะห์และเลือกกลยุทธ์สเกลปิ้งที่เหมาะสมที่สุด:"""
 
@@ -671,7 +671,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         trend_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 ประวัติแท่งเทียน M15 ย้อนหลัง:
-{self._format_candles_brief(df_15m_pa, 5)}
+{self._format_candles_brief(df_15m_pa, 30)}
 กรุณาวิเคราะห์แนวโน้มสั้น:"""
         
         logging.info("Scalping Sub-agent 1: เรียกใช้ Micro Trend Analyst...")
@@ -705,9 +705,9 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 
         pa_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 แท่งเทียน M5 ล่าสุด:
-{self._format_candles_brief(df_5m_pa, 5)}
+{self._format_candles_brief(df_5m_pa, 50)}
 แท่งเทียน M1 ล่าสุด:
-{self._format_candles_brief(df_1m_pa, 5)}
+{self._format_candles_brief(df_1m_pa, 30)}
 กรุณาวิเคราะห์พฤติกรรมราคาสไนเปอร์ตามกลยุทธ์ {selected_strat}:"""
         
         logging.info(f"Scalping Sub-agent 2: เรียกใช้ Price Action Sniper ({selected_strat})...")
@@ -799,9 +799,9 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         trend_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 ประวัติแท่ง H1 ย้อนหลัง:
-{self._format_candles_brief(df_1h_pa, 5)}
+{self._format_candles_brief(df_1h_pa, 48)}
 ประวัติแท่ง H4 ย้อนหลัง:
-{self._format_candles_brief(df_4h_pa, 3)}
+{self._format_candles_brief(df_4h_pa, 12)}
 กรุณาวิเคราะห์สภาวะแนวโน้มรายวัน:"""
         
         logging.info("Day Trading Sub-agent 1: เรียกใช้ Intraday Trend Analyst...")
@@ -817,7 +817,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         range_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 แท่ง M15 ล่าสุด:
-{self._format_candles_brief(df_15m_pa, 5)}
+{self._format_candles_brief(df_15m_pa, 30)}
 ความผันผวนระดับ H1 (ATR): {atr_1h:.2f}
 กรุณาวิเคราะห์กรอบสวิง:"""
         
@@ -904,9 +904,9 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         trend_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 ประวัติแท่ง D1 ย้อนหลัง:
-{self._format_candles_brief(df_1d_pa, 5)}
+{self._format_candles_brief(df_1d_pa, 30)}
 ประวัติแท่ง W1 ย้อนหลัง:
-{self._format_candles_brief(df_1w_pa, 3)}
+{self._format_candles_brief(df_1w_pa, 4)}
 กรุณาวิเคราะห์แนวโน้มสวิงใหญ่:"""
         
         logging.info("Swing Trading Sub-agent 1: เรียกใช้ Macro Structure Analyst...")
@@ -922,7 +922,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         fundamental_user = f"""ราคาปัจจุบัน: {current_price:.2f}
 แท่ง H4 ล่าสุด:
-{self._format_candles_brief(df_4h_pa, 5)}
+{self._format_candles_brief(df_4h_pa, 48)}
 กรุณาวิเคราะห์สภาวะเชิงปัจจัยพื้นฐานและความเสี่ยงยาว:"""
         
         logging.info("Swing Trading Sub-agent 2: เรียกใช้ Fundamental Catalyst Guard...")

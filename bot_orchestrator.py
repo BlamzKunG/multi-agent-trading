@@ -216,7 +216,7 @@ class TradingBotOrchestrator:
             df_15m = self.data_feed.get_historical_data(interval="15m", period="2d")
             df_30m = self.data_feed.get_historical_data(interval="30m", period="2d")
             
-            regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol)
+            regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol, num_fast=50, num_slow=30)
             decision = self.agents.analyze_scalping(
                 df_1m=df_1m, df_5m=df_5m, df_15m=df_15m, df_30m=df_30m,
                 balance=self.exchange.balance, symbol=self.symbol,
@@ -239,7 +239,7 @@ class TradingBotOrchestrator:
                 return d
             df_4h = resample_h4(df_1h)
             
-            regime = self.agents.analyze_market_regime(df_15m, df_1h, df_4h, symbol=self.symbol)
+            regime = self.agents.analyze_market_regime(df_15m, df_1h, df_4h, symbol=self.symbol, num_fast=50, num_slow=48)
             decision = self.agents.analyze_daytrading(
                 df_15m=df_15m, df_1h=df_1h, df_4h=df_4h,
                 balance=self.exchange.balance, symbol=self.symbol,
@@ -262,7 +262,7 @@ class TradingBotOrchestrator:
             df_1d = self.data_feed.get_historical_data(interval="1d", period="3mo")
             df_1w = self.data_feed.get_historical_data(interval="1wk", period="1y")
             
-            regime = self.agents.analyze_market_regime(df_4h, df_1d, df_1w, symbol=self.symbol)
+            regime = self.agents.analyze_market_regime(df_4h, df_1d, df_1w, symbol=self.symbol, num_fast=48, num_slow=30)
             decision = self.agents.analyze_swingtrading(
                 df_4h=df_4h, df_1d=df_1d, df_1w=df_1w,
                 balance=self.exchange.balance, symbol=self.symbol,

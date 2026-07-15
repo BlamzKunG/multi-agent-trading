@@ -224,7 +224,7 @@ class MT5TradingBotOrchestrator:
             df_15m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="15m", num_candles=100)
             df_30m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="30m", num_candles=100)
             
-            regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol)
+            regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol, num_fast=50, num_slow=30)
             decision = self.agents.analyze_scalping(
                 df_1m=df_1m, df_5m=df_5m, df_15m=df_15m, df_30m=df_30m,
                 balance=balance, symbol=self.symbol,
@@ -239,7 +239,7 @@ class MT5TradingBotOrchestrator:
             df_1h = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1h", num_candles=100)
             df_4h = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="4h", num_candles=100)
             
-            regime = self.agents.analyze_market_regime(df_15m, df_1h, df_4h, symbol=self.symbol)
+            regime = self.agents.analyze_market_regime(df_15m, df_1h, df_4h, symbol=self.symbol, num_fast=50, num_slow=48)
             decision = self.agents.analyze_daytrading(
                 df_15m=df_15m, df_1h=df_1h, df_4h=df_4h,
                 balance=balance, symbol=self.symbol,
@@ -254,7 +254,7 @@ class MT5TradingBotOrchestrator:
             df_1d = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1d", num_candles=100)
             df_1w = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1w", num_candles=100)
             
-            regime = self.agents.analyze_market_regime(df_4h, df_1d, df_1w, symbol=self.symbol)
+            regime = self.agents.analyze_market_regime(df_4h, df_1d, df_1w, symbol=self.symbol, num_fast=48, num_slow=30)
             decision = self.agents.analyze_swingtrading(
                 df_4h=df_4h, df_1d=df_1d, df_1w=df_1w,
                 balance=balance, symbol=self.symbol,
