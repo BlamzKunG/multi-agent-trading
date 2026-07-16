@@ -5,14 +5,14 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://google.com"
-#property version   "1.10"
+#property version   "1.20"
 #property strict
 
 //--- Input Parameters
-input string             InpIndicatorName  = "Quantum TrendPulse"; // Name of the ex5 indicator (without .ex5)
+input string             InpIndicatorName  = "Quantum TrendPulse"; // Name of the ex5 indicator (e.g. "Quantum TrendPulse" or "Market\\Quantum TrendPulse")
 input int                InpBuyBuffer      = 4;                    // Buffer index for BUY signals
 input int                InpSellBuffer     = 5;                    // Buffer index for SELL signals
-input int                InpScanBars       = 200;                  // Number of historical bars to scan
+input int                InpScanBars       = 1000;                 // Number of historical bars to scan (default 1000 to find deep signals)
 
 //--- Global Handles
 int handle_m1  = INVALID_HANDLE;
@@ -24,18 +24,34 @@ int handle_m15 = INVALID_HANDLE;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   Print("🚀 [QuantumBridgeEA] Initializing Expert Advisor...");
+   
    // Initialize handles for M1, M5, M15
+   ResetLastError();
    handle_m1  = iCustom(_Symbol, PERIOD_M1,  InpIndicatorName);
+   if (handle_m1 == INVALID_HANDLE) {
+      PrintFormat("❌ [QuantumBridgeEA] Failed to create handle for M1. Error: %d. (Check indicator name or path)", GetLastError());
+   }
+   
+   ResetLastError();
    handle_m5  = iCustom(_Symbol, PERIOD_M5,  InpIndicatorName);
+   if (handle_m5 == INVALID_HANDLE) {
+      PrintFormat("❌ [QuantumBridgeEA] Failed to create handle for M5. Error: %d.", GetLastError());
+   }
+   
+   ResetLastError();
    handle_m15 = iCustom(_Symbol, PERIOD_M15, InpIndicatorName);
+   if (handle_m15 == INVALID_HANDLE) {
+      PrintFormat("❌ [QuantumBridgeEA] Failed to create handle for M15. Error: %d.", GetLastError());
+   }
    
    if(handle_m1 == INVALID_HANDLE || handle_m5 == INVALID_HANDLE || handle_m15 == INVALID_HANDLE)
    {
-      Print("❌ [QuantumBridgeEA] Failed to load one of the indicator handles");
+      Print("❌ [QuantumBridgeEA] Initialization failed due to invalid handles. Please check if the indicator is in the correct folder (e.g. 'Market\\Quantum TrendPulse' if downloaded from MQL5 Market).");
       return(INIT_FAILED);
    }
    
-   Print("✅ [QuantumBridgeEA] Handles initialized for M1, M5, M15 of: ", InpIndicatorName);
+   Print("✅ [QuantumBridgeEA] Handles initialized successfully for M1, M5, and M15.");
    return(INIT_SUCCEEDED);
 }
 
@@ -47,6 +63,7 @@ void OnDeinit(const int reason)
    if(handle_m1  != INVALID_HANDLE) IndicatorRelease(handle_m1);
    if(handle_m5  != INVALID_HANDLE) IndicatorRelease(handle_m5);
    if(handle_m15 != INVALID_HANDLE) IndicatorRelease(handle_m15);
+   Print("🚪 [QuantumBridgeEA] Expert Advisor stopped.");
 }
 
 //+------------------------------------------------------------------+
@@ -62,12 +79,23 @@ bool GetLatestSignal(int handle, ENUM_TIMEFRAMES tf, double &direction, datetime
    ArraySetAsSeries(sell_buffer, true);
    ArraySetAsSeries(times, true);
    
+   ResetLastError();
    int copied_buy = CopyBuffer(handle, InpBuyBuffer, 0, InpScanBars, buy_buffer);
    int copied_sell = CopyBuffer(handle, InpSellBuffer, 0, InpScanBars, sell_buffer);
    int copied_time = CopyTime(_Symbol, tf, 0, InpScanBars, times);
    
    if(copied_buy <= 0 || copied_sell <= 0 || copied_time <= 0)
    {
+      // Output error once in a while to avoid log spamming
+      static datetime last_err_time = 0;
+      if (TimeCurrent() - last_err_time > 10) {
+         PrintFormat("⚠️ [QuantumBridgeEA] CopyBuffer failed for %s. BuyCopied: %d, SellCopied: %d, TimeCopied: %d. Error Code: %d", 
+                     EnumToString(tf), copied_buy, copied_sell, copied_time, GetLastError());
+         last_err_time = TimeCurrent();
+      }
+      direction = 0.0;
+      sig_time = 0;
+      sig_price = 0.0;
       return false;
    }
    
