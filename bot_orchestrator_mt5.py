@@ -187,41 +187,47 @@ class MT5TradingBotOrchestrator:
             quantum_direction = "SELL"
             
         # ดึงคู่ระบุไทม์เฟรมตรวจสอบการคอนเฟิร์ม (Trigger TF)
-        quantum_mapping = {
-            "scalping": {"trigger_tf": "1m", "label": "M1"},
-            "daytrading": {"trigger_tf": "15m", "label": "M15"},
-            "swingtrading": {"trigger_tf": "1h", "label": "H1"}
-        }
-        
-        trigger_tf = quantum_mapping[strategy_name]["trigger_tf"]
-        trigger_label = quantum_mapping[strategy_name]["label"]
-        
-        # ดึงราคาปิดล่าสุดบนแท่ง Trigger
-        df_trigger = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe=trigger_tf, num_candles=5)
-        if not df_trigger.empty:
-            trigger_close = float(df_trigger['close'].iloc[-1])
-        else:
-            trigger_close = current_price
-            
-        # จัดการเช็คสถานะการยืนยันราคาปิดที่ได้เปรียบ
+        trigger_tf = None
+        trigger_label = None
+        trigger_close = current_price
         confirmation_triggered = False
-        if quantum_direction == "BUY" and quantum_price > 0:
-            confirmation_triggered = (trigger_close > quantum_price)
-        elif quantum_direction == "SELL" and quantum_price > 0:
-            confirmation_triggered = (trigger_close < quantum_price)
-            
-        state = self.load_bot_state()
-        last_trig_time = state.setdefault("last_triggered_signal_time", {}).get(strategy_name, 0.0)
+        last_trig_time = 0.0
         
-        # แสดง Log สถานะสัญญาณจากอินดิเคเตอร์
-        if quantum_direction:
-            import datetime
-            sig_time_str = datetime.datetime.fromtimestamp(quantum_time).strftime('%Y-%m-%d %H:%M:%S') if quantum_time else 'N/A'
-            logging.info(f"📊 [Quantum Alignment] ทิศทางหลักพ้องสามไทม์เฟรม (M1/M5/M15): {quantum_direction}")
-            logging.info(f"📊 [Quantum TrendPulse] {strategy_name.upper()} -> ราคาเกิดสัญญาณ M15: {quantum_price} | เวลาเกิดสัญญาณ M15: {sig_time_str}")
-            logging.info(f"🔍 [Quantum Confirm] ราคาปิดปัจจุบัน {trigger_label}: {trigger_close:.2f} | ราคาอ้างอิง M15: {quantum_price:.2f} | การคอนเฟิร์ม: {'YES' if confirmation_triggered else 'WAITING'}")
-        else:
-            logging.info(f"⏳ [Quantum Alignment] {strategy_name.upper()} -> สัญญาณสามไทม์เฟรมไม่ตรงกัน หรือไม่มีสัญญาณ: M15={dir_m15 or 0.0}, M5={dir_m5 or 0.0}, M1={dir_m1 or 0.0} (ข้ามการเปิดออเดอร์ใหม่)")
+        if strategy_name != "groq_gen2":
+            quantum_mapping = {
+                "scalping": {"trigger_tf": "1m", "label": "M1"},
+                "daytrading": {"trigger_tf": "15m", "label": "M15"},
+                "swingtrading": {"trigger_tf": "1h", "label": "H1"}
+            }
+            
+            trigger_tf = quantum_mapping[strategy_name]["trigger_tf"]
+            trigger_label = quantum_mapping[strategy_name]["label"]
+            
+            # ดึงราคาปิดล่าสุดบนแท่ง Trigger
+            df_trigger = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe=trigger_tf, num_candles=5)
+            if not df_trigger.empty:
+                trigger_close = float(df_trigger['close'].iloc[-1])
+            else:
+                trigger_close = current_price
+                
+            # จัดการเช็คสถานะการยืนยันราคาปิดที่ได้เปรียบ
+            if quantum_direction == "BUY" and quantum_price > 0:
+                confirmation_triggered = (trigger_close > quantum_price)
+            elif quantum_direction == "SELL" and quantum_price > 0:
+                confirmation_triggered = (trigger_close < quantum_price)
+                
+            state = self.load_bot_state()
+            last_trig_time = state.setdefault("last_triggered_signal_time", {}).get(strategy_name, 0.0)
+            
+            # แสดง Log สถานะสัญญาณจากอินดิเคเตอร์
+            if quantum_direction:
+                import datetime
+                sig_time_str = datetime.datetime.fromtimestamp(quantum_time).strftime('%Y-%m-%d %H:%M:%S') if quantum_time else 'N/A'
+                logging.info(f"📊 [Quantum Alignment] ทิศทางหลักพ้องสามไทม์เฟรม (M1/M5/M15): {quantum_direction}")
+                logging.info(f"📊 [Quantum TrendPulse] {strategy_name.upper()} -> ราคาเกิดสัญญาณ M15: {quantum_price} | เวลาเกิดสัญญาณ M15: {sig_time_str}")
+                logging.info(f"🔍 [Quantum Confirm] ราคาปิดปัจจุบัน {trigger_label}: {trigger_close:.2f} | ราคาอ้างอิง M15: {quantum_price:.2f} | การคอนเฟิร์ม: {'YES' if confirmation_triggered else 'WAITING'}")
+            else:
+                logging.info(f"⏳ [Quantum Alignment] {strategy_name.upper()} -> สัญญาณสามไทม์เฟรมไม่ตรงกัน หรือไม่มีสัญญาณ: M15={dir_m15 or 0.0}, M5={dir_m5 or 0.0}, M1={dir_m1 or 0.0} (ข้ามการเปิดออเดอร์ใหม่)")
             
         # 4. แบ่งการจัดการตามประเภทกลยุทธ์
         if strategy_name == "scalping":
