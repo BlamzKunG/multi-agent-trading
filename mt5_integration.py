@@ -37,8 +37,11 @@ class MT5Integration:
                 
         self.initialized = True
         account_info = mt5.account_info()
-        if account_info:
+        term_info = mt5.terminal_info()
+        if account_info and term_info:
             logging.info(f"เชื่อมต่อสำเร็จ! บัญชี: {account_info.login} | โบรกเกอร์: {account_info.company} | ยอดเงินคงเหลือ: ${account_info.balance:.2f}")
+            logging.info(f"📍 เส้นทาง MT5 Terminal: {term_info.path}")
+            logging.info(f"📂 โฟลเดอร์ข้อมูล MT5 Data: {term_info.data_path}")
         return True
 
     def disconnect(self):
