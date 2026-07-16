@@ -87,6 +87,28 @@ class MT5TradingBotOrchestrator:
             return False
         return True
 
+    def load_bot_state(self):
+        """โหลดสถานะประวัติการเทรดและยืนยันสัญญาณจากไฟล์"""
+        import json, os
+        state_file = "bot_state.json"
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"last_triggered_signal_time": {}}
+        
+    def save_bot_state(self, state):
+        """บันทึกสถานะลงไฟล์"""
+        import json
+        try:
+            with open("bot_state.json", "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logging.error(f"ไม่สามารถบันทึกสถานะบอทได้: {e}")
+
+
     def run_cycle(self):
         """
         รันทุกกลยุทธ์ย่อยทีละตัวตามลำดับ (หากไม่มีคิวภายนอกควบคุม)
@@ -97,7 +119,8 @@ class MT5TradingBotOrchestrator:
 
     def run_strategy_cycle(self, strategy_name):
         """
-        รันวงจรการเทรดของแต่ละกลยุทธ์ โดยกลยุทธ์ Scalping จะแบ่งย่อยเป็น 5 กลยุทธ์ย่อยที่มี Magic Number และคำสั่งล่วงหน้าแยกของตนเอง
+        รันวงจรการเทรดของแต่ละกลยุทธ์ โดยกำหนดทิศทางหลักจาก Quantum TrendPulse Indicator (MT5 Global Variables)
+        พร้อมใช้ตรรกะการตรวจสอบการยืนยันราคาปิดย้อนหลังของ M1 / M15 / H1
         """
         if strategy_name not in self.strategies:
             logging.error(f"ไม่พบข้อมูลกลยุทธ์ {strategy_name}")
@@ -131,7 +154,55 @@ class MT5TradingBotOrchestrator:
         spread = price_info.get("spread", 0.0)
         balance = acc_status["balance"]
         
-        # 4. จัดการตามประเภทกลยุทธ์
+        # --- [Quantum TrendPulse Integration] ---
+        # ดึงสัญญาณทิศทางจาก MT5 Global Variables
+        quantum_dir = self.mt5_bridge.get_global_variable("QUANTUM_LATEST_DIR")   # 1.0 = BUY, -1.0 = SELL, 0.0 = None
+        quantum_time = self.mt5_bridge.get_global_variable("QUANTUM_LATEST_TIME")
+        quantum_price = self.mt5_bridge.get_global_variable("QUANTUM_LATEST_PRICE")
+        
+        quantum_direction = None
+        if quantum_dir == 1.0:
+            quantum_direction = "BUY"
+        elif quantum_dir == -1.0:
+            quantum_direction = "SELL"
+            
+        # ดึงคู่ระบุไทม์เฟรมตรวจสอบการคอนเฟิร์ม (Trigger TF)
+        quantum_mapping = {
+            "scalping": {"trigger_tf": "1m", "label": "M1"},
+            "daytrading": {"trigger_tf": "15m", "label": "M15"},
+            "swingtrading": {"trigger_tf": "1h", "label": "H1"}
+        }
+        
+        trigger_tf = quantum_mapping[strategy_name]["trigger_tf"]
+        trigger_label = quantum_mapping[strategy_name]["label"]
+        
+        # ดึงราคาปิดล่าสุดบนแท่ง Trigger
+        df_trigger = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe=trigger_tf, num_candles=5)
+        if not df_trigger.empty:
+            trigger_close = float(df_trigger['close'].iloc[-1])
+        else:
+            trigger_close = current_price
+            
+        # จัดการเช็คสถานะการยืนยันราคาปิดที่ได้เปรียบ
+        confirmation_triggered = False
+        if quantum_direction == "BUY" and quantum_price > 0:
+            confirmation_triggered = (trigger_close > quantum_price)
+        elif quantum_direction == "SELL" and quantum_price > 0:
+            confirmation_triggered = (trigger_close < quantum_price)
+            
+        state = self.load_bot_state()
+        last_trig_time = state.setdefault("last_triggered_signal_time", {}).get(strategy_name, 0.0)
+        
+        # แสดง Log สถานะสัญญาณจากอินดิเคเตอร์
+        if quantum_direction:
+            import datetime
+            sig_time_str = datetime.datetime.fromtimestamp(quantum_time).strftime('%Y-%m-%d %H:%M:%S') if quantum_time else 'N/A'
+            logging.info(f"📊 [Quantum TrendPulse] {strategy_name.upper()} -> ทิศทางหลัก: {quantum_direction} | ราคาเกิดสัญญาณ: {quantum_price} | เวลาเกิดสัญญาณ: {sig_time_str}")
+            logging.info(f"🔍 [Quantum Confirm] ราคาปิดปัจจุบัน {trigger_label}: {trigger_close:.2f} | ราคาอ้างอิงสัญญาณ: {quantum_price:.2f} | การคอนเฟิร์ม: {'YES' if confirmation_triggered else 'WAITING'}")
+        else:
+            logging.info(f"📊 [Quantum TrendPulse] {strategy_name.upper()} -> ไม่มีสัญญาณทิศทางในขณะนี้ (ข้ามการตั้งใหม่)")
+            
+        # 4. แบ่งการจัดการตามประเภทกลยุทธ์
         if strategy_name == "scalping":
             scalping_info = {
                 "TREND_PULLBACK": 1001,
@@ -141,48 +212,57 @@ class MT5TradingBotOrchestrator:
                 "MOMENTUM_CONTINUATION": 1005
             }
             
-            strats_to_analyze = []
-            pending_orders_dict = {}
-            
-            # ตรวจสอบ Trailing Stop และกำหนดกลยุทธ์ย่อยที่ต้องวิเคราะห์ในลูปนี้
+            # รัน Trailing Stop สำหรับโพซิชันที่ค้างอยู่เสมอ (ไม่ต้องสนว่ายืนยันสัญญาณหรือไม่)
             for sub_name, m_num in scalping_info.items():
-                # ตรวจสอบออเดอร์ค้าง (Open Positions) ของกลยุทธ์ย่อยนี้
                 sub_positions = self.mt5_bridge.get_open_positions(self.symbol, magic=m_num)
                 if sub_positions:
-                    # มีออเดอร์ค้าง -> รัน Trailing Stop และไม่อ่านวิเคราะห์เพื่อเปิดเพิ่มในรอบนี้
                     self.manage_trailing_stop(sub_name, sub_positions, strat)
-                else:
-                    # เช็คว่าหมดช่วง Hold หรือยัง
-                    if time.time() >= self.scalping_next_run.get(sub_name, 0.0):
-                        strats_to_analyze.append(sub_name)
+                    
+            # ตรวจสอบการยกเลิก Pending Order เก่าหากทิศทางเปลี่ยน
+            for sub_name, m_num in scalping_info.items():
+                sub_pendings = self.mt5_bridge.get_pending_orders(self.symbol, magic=m_num)
+                if sub_pendings and (not quantum_direction or (quantum_time and quantum_time > last_trig_time)):
+                    for p in sub_pendings:
+                        self.mt5_bridge.cancel_pending_order(p["id"])
+                        logging.info(f"🔴 [Scalping] ยกเลิกคำสั่งล่วงหน้า #{p['id']} เพื่อเคลียร์ออเดอร์เก่ารองรับสัญญาณใหม่")
+            
+            # หากไม่มีสัญญาณทิศทาง หรือยังไม่ได้รับการคอนเฟิร์มตามเงื่อนไข ให้จบการทำงานรอบนี้ทันที
+            if not quantum_direction:
+                return
                 
-                # ดึงคำสั่งซื้อขายล่วงหน้า (Pending Orders) ของกลยุทธ์ย่อยนี้
+            if quantum_time and quantum_time > last_trig_time:
+                if not confirmation_triggered:
+                    logging.info(f"⏳ [Autopilot] Scalping: สัญญาณใหม่ยังไม่เข้าเงื่อนไขคอนเฟิร์มปิดแท่ง M1 สูงกว่า/ต่ำกว่า {quantum_price:.2f} (ข้ามรอบ)")
+                    return
+            
+            # หากมีสัญญาณที่ยืนยันแล้ว หรือต้องการจัดการ Pending จากสัญญาณปัจจุบัน
+            strats_to_analyze = []
+            pending_orders_dict = {}
+            for sub_name, m_num in scalping_info.items():
+                sub_positions = self.mt5_bridge.get_open_positions(self.symbol, magic=m_num)
                 sub_pendings = self.mt5_bridge.get_pending_orders(self.symbol, magic=m_num)
                 pending_orders_dict[sub_name] = sub_pendings
                 
-                # หากมี Pending Order ค้างอยู่ จำเป็นต้องวิเคราะห์เพื่อจัดการ (ลบ/แก้ไข) ถึงแม้จะอยู่ในช่วง Hold
-                if sub_pendings and sub_name not in strats_to_analyze and not sub_positions:
-                    strats_to_analyze.append(sub_name)
-            
+                # อนุญาตให้เข้าวิเคราะห์ได้หากไม่มีสถานะค้าง หรือมี Pending ค้างเพื่อแก้ไข/จัดการ
+                if not sub_positions:
+                    if time.time() >= self.scalping_next_run.get(sub_name, 0.0) or sub_pendings:
+                        strats_to_analyze.append(sub_name)
+                        
             if not strats_to_analyze:
-                logging.info("⚡ Live [Autopilot] Scalping: ไม่มีกลยุทธ์ย่อยใดต้องวิเคราะห์ในรอบนี้ (อยู่ในช่วง Hold หรือมีออเดอร์ค้าง)")
                 return
                 
-            logging.info(f"⏰ Live === เริ่มประมวลผลกลยุทธ์ Scalping ประจำรอบ (กลยุทธ์ที่วิเคราะห์: {', '.join(strats_to_analyze)}) ===")
+            logging.info(f"⏰ Live === เริ่มประมวลผลกลยุทธ์ Scalping ประจำรอบ (ทิศทางบังคับ: {quantum_direction}) ===")
             
-            # ดึงประวัติรวมสะสมเพื่อส่งคำนวณสถิติ
             all_scalp_trades = []
             for m_num in [strat["magic"]] + list(scalping_info.values()):
                 all_scalp_trades.extend(self.mt5_bridge.get_trade_history(symbol=self.symbol, days=15, magic=m_num))
             perf_stats = PerformanceTracker.calculate_metrics(all_scalp_trades)
             
-            # เรียกใช้ตัวประเมิน Regime ตลาดรวม
             df_5m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="5m", num_candles=100)
             df_15m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="15m", num_candles=100)
             df_30m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="30m", num_candles=100)
             regime = self.agents.analyze_market_regime(df_5m, df_15m, df_30m, symbol=self.symbol, num_fast=50, num_slow=30)
             
-            # รันการวิเคราะห์รายกลยุทธ์แบบขนานและดึงผลลัพธ์การตัดสินใจ
             df_1m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="1m", num_candles=100)
             decisions = self.agents.analyze_scalping(
                 df_1m=df_1m, df_5m=df_5m, df_15m=df_15m, df_30m=df_30m,
@@ -191,10 +271,15 @@ class MT5TradingBotOrchestrator:
                 performance_stats=perf_stats, trade_history=all_scalp_trades,
                 regime_report=regime,
                 pending_orders=pending_orders_dict,
-                strats_to_analyze=strats_to_analyze
+                strats_to_analyze=strats_to_analyze,
+                quantum_direction=quantum_direction  # บังคับฝั่งทิศทางจากโมดูล
             )
             
-            # สั่งการตัดสินใจสำหรับแต่ละกลยุทธ์ย่อยที่ส่งเข้ามา
+            # บันทึกสถานะการทำรายการ
+            if decisions and quantum_time and quantum_time > last_trig_time:
+                state["last_triggered_signal_time"]["scalping"] = quantum_time
+                self.save_bot_state(state)
+                
             for sub_name, decision in decisions.items():
                 m_num = scalping_info[sub_name]
                 self.execute_decision(sub_name, decision, m_num, pending_orders_dict[sub_name], strat)
@@ -202,21 +287,32 @@ class MT5TradingBotOrchestrator:
         else:
             # สำหรับ Day Trading และ Swing Trading
             magic_number = int(strat.get("magic", 123456))
-            logging.info(f"⏰ Live === เริ่มรอบการทำงานของกลยุทธ์: {strategy_name.upper()} (Magic: {magic_number}) ===")
             
             open_positions = self.mt5_bridge.get_open_positions(self.symbol, magic=magic_number)
             if open_positions:
                 self.manage_trailing_stop(strategy_name, open_positions, strat)
                 return
                 
-            # ตรวจสอบระยะเวลาพักวิเคราะห์ (Hold) เพื่อประหยัด Token
-            now = time.time()
-            if now < strat.get("next_run_time", 0):
-                remaining_sec = strat["next_run_time"] - now
-                logging.info(f"⏳ Live [Hold Active] กลยุทธ์ {strategy_name}: อยู่ในช่วงพักวิเคราะห์ เหลือเวลา {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
+            pending_orders = self.mt5_bridge.get_pending_orders(self.symbol, magic=magic_number)
+            
+            # ลบ Pending เก่าถ้าทิศทางเปลี่ยน
+            if pending_orders and (not quantum_direction or (quantum_time and quantum_time > last_trig_time)):
+                for p in pending_orders:
+                    self.mt5_bridge.cancel_pending_order(p["id"])
+                    logging.info(f"🔴 [{strategy_name.upper()}] ยกเลิกคำสั่งล่วงหน้า #{p['id']} เพื่อเคลียร์ออเดอร์เก่า")
+            
+            if not quantum_direction:
                 return
                 
-            pending_orders = self.mt5_bridge.get_pending_orders(self.symbol, magic=magic_number)
+            if quantum_time and quantum_time > last_trig_time:
+                if not confirmation_triggered:
+                    logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: สัญญาณใหม่ยังไม่คอนเฟิร์มบนแท่ง {trigger_label} ข้ามรอบ")
+                    return
+                    
+            now = time.time()
+            if now < strat.get("next_run_time", 0) and not pending_orders:
+                return
+                
             closed_trades = self.mt5_bridge.get_trade_history(symbol=self.symbol, days=15, magic=magic_number)
             perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
             
@@ -232,7 +328,8 @@ class MT5TradingBotOrchestrator:
                     leverage=100.0, spread=spread,
                     performance_stats=perf_stats, trade_history=closed_trades,
                     regime_report=regime,
-                    pending_orders=pending_orders
+                    pending_orders=pending_orders,
+                    quantum_direction=quantum_direction
                 )
             elif strategy_name == "swingtrading":
                 df_4h = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="4h", num_candles=100)
@@ -245,11 +342,16 @@ class MT5TradingBotOrchestrator:
                     leverage=100.0, spread=spread,
                     performance_stats=perf_stats, trade_history=closed_trades,
                     regime_report=regime,
-                    pending_orders=pending_orders
+                    pending_orders=pending_orders,
+                    quantum_direction=quantum_direction
                 )
                 
             if decision:
+                if quantum_time and quantum_time > last_trig_time:
+                    state["last_triggered_signal_time"][strategy_name] = quantum_time
+                    self.save_bot_state(state)
                 self.execute_decision(strategy_name, decision, magic_number, pending_orders, strat)
+
 
     def manage_trailing_stop(self, strategy_name, open_positions, strat):
         """จัดการการเลื่อน trailing stop ตามข้อมูล ATR สำหรับพอร์ตจริง"""

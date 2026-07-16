@@ -608,7 +608,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             summary += f"- {row['timestamp'].strftime('%H:%M')} Close={row['close']:.2f}, High={row['high']:.2f}, Low={row['low']:.2f} | {row['candle_type']} | ATR={row.get('atr_14', 0.0):.2f}\n"
         return summary
 
-    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None, strats_to_analyze=None):
+    def analyze_scalping(self, df_1m, df_5m, df_15m, df_30m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None, strats_to_analyze=None, quantum_direction=None):
         """
         1) Scalping Agent: Parallel analysis where each active sub-strategy acts as an independent agent (using its own magic number & pending orders).
         """
@@ -621,6 +621,11 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         current_price = float(df_5m_pa['close'].iloc[-1])
         atr_5m = float(df_5m_pa['atr_14'].iloc[-1])
         
+        # Add quantum direction info to the prompts
+        quantum_info_str = ""
+        if quantum_direction:
+            quantum_info_str = f"\n⚠️ [ข้อบังคับทิศทางหลัก] สัญญาณล่าสุดจาก Quantum TrendPulse Indicator คือ: {quantum_direction}\nคุณต้องวิเคราะห์และเสนอแผนการเทรดฝั่ง {quantum_direction} เท่านั้น ห้ามเสนอฝั่ง {'SELL' if quantum_direction == 'BUY' else 'BUY'} โดยเด็ดขาด!"
+
         # Risk Manager calculations
         sl_distance_usd = max(1.5 * atr_5m, 1.50 if "XAU" in symbol.upper() else 15.0)
         contract_size = 100.0 if "XAU" in symbol.upper() else 1.0
@@ -652,6 +657,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 สภาวะตลาดหลัก (Market Regime): {json.dumps(regime_report, indent=2)}
 ประวัติแท่งเทียน M5 ล่าสุด:
 {self._format_candles_brief(df_5m_pa, 50)}
+{quantum_info_str}
 
 จงวิเคราะห์และระบุลิสต์กลยุทธ์สเกลปิ้งที่เหมาะสมเพื่อส่งไปวิเคราะห์เชิงลึก:"""
 
@@ -781,6 +787,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 รายงานสรุปแนวโน้ม Micro Trend Analyst: {trend_report}
 รายงานวิเคราะห์จาก {agent_name}: {report}
 {reflection_context}
+{quantum_info_str}
 
 จงตอบสรุปผลการเทรดแบบ Scalping (กลยุทธ์ {strat}) ในรูปแบบ JSON:"""
 
@@ -793,7 +800,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
             decisions_dict[strat] = proposal
             
         return decisions_dict
-    def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
+    def analyze_daytrading(self, df_15m, df_1h, df_4h, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None, quantum_direction=None):
         """
         2) Day Trading Agent: Intraday trading, holds positions only within the day
         """
@@ -806,6 +813,11 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         current_price = float(df_15m_pa['close'].iloc[-1])
         atr_1h = float(df_1h_pa['atr_14'].iloc[-1])
         
+        # Add quantum direction info to the prompts
+        quantum_info_str = ""
+        if quantum_direction:
+            quantum_info_str = f"\n⚠️ [ข้อบังคับทิศทางหลัก] สัญญาณล่าสุดจาก Quantum TrendPulse Indicator คือ: {quantum_direction}\nคุณต้องวิเคราะห์และเสนอแผนการเทรดฝั่ง {quantum_direction} เท่านั้น ห้ามเสนอฝั่ง {'SELL' if quantum_direction == 'BUY' else 'BUY'} โดยเด็ดขาด!"
+
         # Risk Manager calculations (Day Trade SL is typically 1.5 * ATR 1h to avoid intraday noise)
         sl_distance_usd = max(1.5 * atr_1h, 3.0 if "XAU" in symbol.upper() else 30.0)
         contract_size = 100.0 if "XAU" in symbol.upper() else 1.0
@@ -892,6 +904,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 รายงาน Intraday Trend Analyst: {trend_report}
 รายงาน Range Guard: {range_report}
 {reflection_context}
+{quantum_info_str}
 
 จงตอบสรุปการตัดสินใจในรูปแบบ JSON:"""
 
@@ -903,7 +916,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         
         return proposal
 
-    def analyze_swingtrading(self, df_4h, df_1d, df_1w, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None):
+    def analyze_swingtrading(self, df_4h, df_1d, df_1w, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, regime_report=None, pending_orders=None, quantum_direction=None):
         """
         3) Swing Trading Agent: Holds positions for days to weeks, capturing large structural moves
         """
@@ -916,6 +929,11 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         current_price = float(df_4h_pa['close'].iloc[-1])
         atr_1d = float(df_1d_pa['atr_14'].iloc[-1])
         
+        # Add quantum direction info to the prompts
+        quantum_info_str = ""
+        if quantum_direction:
+            quantum_info_str = f"\n⚠️ [ข้อบังคับทิศทางหลัก] สัญญาณล่าสุดจาก Quantum TrendPulse Indicator คือ: {quantum_direction}\nคุณต้องวิเคราะห์และเสนอแผนการเทรดฝั่ง {quantum_direction} เท่านั้น ห้ามเสนอฝั่ง {'SELL' if quantum_direction == 'BUY' else 'BUY'} โดยเด็ดขาด!"
+
         # Risk Manager calculations (Swing Trade SL is typically 1.5 * Daily ATR to handle multi-day fluctuations)
         sl_distance_usd = max(1.5 * atr_1d, 8.0 if "XAU" in symbol.upper() else 80.0)
         contract_size = 100.0 if "XAU" in symbol.upper() else 1.0
@@ -1000,6 +1018,7 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
 รายงาน Macro Structure Analyst: {trend_report}
 รายงาน Fundamental Catalyst Guard: {fundamental_report}
 {reflection_context}
+{quantum_info_str}
 
 จงตอบสรุปการตัดสินใจในรูปแบบ JSON:"""
 

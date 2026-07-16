@@ -89,6 +89,26 @@ class TradingBotOrchestrator:
             return False
         return True
 
+    def load_bot_state(self):
+        import json, os
+        state_file = "bot_state.json"
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"last_triggered_signal_time": {}}
+        
+    def save_bot_state(self, state):
+        import json
+        try:
+            with open("bot_state.json", "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logging.error(f"ไม่สามารถบันทึกสถานะบอทได้: {e}")
+
+
     def run_cycle(self):
         """
         รันทุกกลยุทธ์ย่อยทีละตัวตามลำดับ (หากไม่มีคิวภายนอกควบคุม)
@@ -178,7 +198,7 @@ class TradingBotOrchestrator:
                 performance_stats=perf_stats, trade_history=all_scalp_trades,
                 regime_report=regime,
                 pending_orders=pending_orders_dict,
-                strats_to_analyze=strats_to_analyze
+                strats_to_analyze=strats_to_analyze, quantum_direction=None
             )
             
             # ดำเนินการตามผลการวิเคราะห์
@@ -218,7 +238,7 @@ class TradingBotOrchestrator:
                     leverage=self.exchange.leverage, spread=0.0,
                     performance_stats=perf_stats, trade_history=closed_trades,
                     regime_report=regime,
-                    pending_orders=pending_orders
+                    pending_orders=pending_orders, quantum_direction=None
                 )
             elif strategy_name == "swingtrading":
                 df_1h_30d = self.data_feed.get_historical_data(interval="1h", period="30d")
@@ -232,7 +252,7 @@ class TradingBotOrchestrator:
                     leverage=self.exchange.leverage, spread=0.0,
                     performance_stats=perf_stats, trade_history=closed_trades,
                     regime_report=regime,
-                    pending_orders=pending_orders
+                    pending_orders=pending_orders, quantum_direction=None
                 )
                 
             if decision:

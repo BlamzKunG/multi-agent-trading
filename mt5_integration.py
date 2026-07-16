@@ -757,3 +757,12 @@ class MT5Integration:
             
         history_list.sort(key=lambda x: x["close_time"], reverse=True)
         return history_list
+
+    def get_global_variable(self, name):
+        """ดึงค่าตัวแปร Global จาก MT5 Terminal"""
+        if not self.connect():
+            return None
+        import MetaTrader5 as mt5
+        if mt5.global_variable_exists(name):
+            return mt5.global_variable_get(name)
+        return None
