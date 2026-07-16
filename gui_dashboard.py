@@ -279,6 +279,16 @@ class TradingBotGUI:
         self.tabs.add(self.tab_perf, text=" 📊 Performance Statistics ")
         self.setup_performance_tab()
         
+        # แท็บที่ 4: Equity Curve
+        self.tab_equity = tk.Frame(self.tabs, bg="#1e293b")
+        self.tabs.add(self.tab_equity, text=" 📈 Equity Curve ")
+        self.setup_equity_tab()
+        
+        # แท็บที่ 5: Indicator Monitor
+        self.tab_indicator = tk.Frame(self.tabs, bg="#1e293b")
+        self.tabs.add(self.tab_indicator, text=" 🔍 Indicator Monitor ")
+        self.setup_indicator_tab()
+        
         # กล่องแสดงบันทึก LOG ด้านล่าง
         self.log_frame = tk.Frame(self.right_panel, bg="#1e293b", padx=10, pady=8)
         self.log_frame.pack(fill="x", side="bottom")
@@ -772,6 +782,12 @@ class TradingBotGUI:
                     self.root.after(0, lambda: self.refresh_positions_tree(open_pos, pending_orders, magic_map))
                     self.root.after(0, lambda: self.refresh_history_tree(history, magic_map))
                     
+                    # อัพเดทข้อมูลแท็บใหม่ (Equity Curve & Sim Indicator Monitor)
+                    self.current_balance = bal
+                    self.current_history = history
+                    self.root.after(0, self.draw_equity_curve)
+                    self.root.after(0, self.show_sim_indicator_monitor)
+                    
                 else:
                     is_gold_open = bot_mt5.is_gold_market_open()
                     bot_mt5.symbol = "XAUUSD" if is_gold_open else "BTCUSD"
@@ -805,11 +821,38 @@ class TradingBotGUI:
                             except Exception:
                                 pass
                                 
+                        # ดึงสัญญาณทิศทางจาก MT5
+                        dir_m1 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M1_DIR")
+                        time_m1 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M1_TIME")
+                        price_m1 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M1_PRICE")
+                        
+                        dir_m5 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M5_DIR")
+                        time_m5 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M5_TIME")
+                        price_m5 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M5_PRICE")
+                        
+                        dir_m15 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M15_DIR")
+                        time_m15 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M15_TIME")
+                        price_m15 = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_M15_PRICE")
+                        
+                        update_time = bot_mt5.mt5_bridge.get_global_variable("QUANTUM_UPDATE_TIME")
+
                         self.root.after(0, lambda: self.refresh_metrics(bal, eq, pnl, price, symbol))
                         self.root.after(0, lambda: self.refresh_positions_tree(open_pos, pending_orders, magic_map))
                         self.root.after(0, lambda: self.refresh_history_tree(history, magic_map))
+                        
+                        # อัพเดทข้อมูลแท็บใหม่ (Equity Curve & Indicator Monitor)
+                        self.current_balance = bal
+                        self.current_history = history
+                        self.root.after(0, self.draw_equity_curve)
+                        self.root.after(0, lambda: self.refresh_indicator_monitor(
+                            dir_m1, time_m1, price_m1,
+                            dir_m5, time_m5, price_m5,
+                            dir_m15, time_m15, price_m15,
+                            update_time, price
+                        ))
                     else:
                         self.root.after(0, self.refresh_offline)
+                        self.root.after(0, self.show_sim_indicator_monitor)
             except Exception as e:
                 pass
                 
@@ -898,6 +941,226 @@ class TradingBotGUI:
                         lbl.config(text=f"${value:,.2f}")
                     else:
                         lbl.config(text=str(value))
+
+    def setup_equity_tab(self):
+        # สร้าง Canvas สำหรับวาดกราฟเส้น Equity
+        self.equity_canvas = tk.Canvas(self.tab_equity, bg="#020617", highlightthickness=0)
+        self.equity_canvas.pack(fill="both", expand=True, padx=10, pady=10)
+        self.equity_canvas.bind("<Configure>", lambda e: self.draw_equity_curve())
+
+    def draw_equity_curve(self):
+        if not hasattr(self, "equity_canvas") or not self.equity_canvas.winfo_exists():
+            return
+        
+        self.equity_canvas.delete("all")
+        w = self.equity_canvas.winfo_width()
+        h = self.equity_canvas.winfo_height()
+        if w < 100 or h < 100:
+            return
+
+        bal = getattr(self, "current_balance", 10000.0)
+        history = getattr(self, "current_history", [])
+        
+        # คัดกรองและจัดเรียงประวัติการปิดออเดอร์ตามวันเวลา
+        sorted_history = sorted(history, key=lambda x: x.get("close_time", ""))
+        pnl_list = [float(t.get("pnl", 0.0)) for t in sorted_history]
+        total_pnl = sum(pnl_list)
+        starting_balance = bal - total_pnl
+        
+        points = [starting_balance]
+        curr = starting_balance
+        for pnl in pnl_list:
+            curr += pnl
+            points.append(curr)
+            
+        pad_x = 60
+        pad_y = 45
+        
+        # วาดพื้นหลัง/กรอบ
+        self.equity_canvas.create_rectangle(pad_x, pad_y, w - pad_x, h - pad_y, outline="#334155", width=1)
+        
+        # ข้อความหัวกราฟ
+        self.equity_canvas.create_text(w // 2, 20, text=f"Account Equity Curve (Balance: ${bal:,.2f} | Trades: {len(points)-1})", fill="#f8fafc", font=("Outfit", 11, "bold"))
+
+        if len(points) < 2:
+            self.equity_canvas.create_text(w // 2, h // 2, text="No trade history available yet to draw equity curve.", fill="#64748b", font=("Outfit", 10))
+            return
+            
+        y_min = min(points)
+        y_max = max(points)
+        y_range = y_max - y_min
+        if y_range == 0:
+            y_min -= 100
+            y_max += 100
+            y_range = 200
+        else:
+            # ขยายกรอบขอบบนล่าง 10% เพื่อความสวยงาม
+            y_min -= y_range * 0.1
+            y_max += y_range * 0.1
+            y_range = y_max - y_min
+            
+        # วาดเส้นกริดแนวนอน (Horizontal Grid Lines & Price Labels)
+        grid_count = 5
+        for i in range(grid_count):
+            val = y_min + i * (y_range / (grid_count - 1))
+            y_coord = h - pad_y - (val - y_min) * (h - 2 * pad_y) / y_range
+            self.equity_canvas.create_line(pad_x, y_coord, w - pad_x, y_coord, fill="#1e293b", dash=(3, 3))
+            self.equity_canvas.create_text(pad_x - 10, y_coord, text=f"${val:,.0f}", fill="#94a3b8", anchor="e", font=("Outfit", 8))
+            
+        # พล็อตจุดพิกัดเส้น
+        coords = []
+        n_points = len(points)
+        for i, val in enumerate(points):
+            cx = pad_x + i * (w - 2 * pad_x) / (n_points - 1)
+            cy = h - pad_y - (val - y_min) * (h - 2 * pad_y) / y_range
+            coords.append((cx, cy))
+            
+        # วาดพื้นที่แรเงาใต้เส้นกราฟ (Polygon)
+        poly_coords = [coords[0][0], h - pad_y]
+        for pt in coords:
+            poly_coords.extend([pt[0], pt[1]])
+        poly_coords.extend([coords[-1][0], h - pad_y])
+        self.equity_canvas.create_polygon(poly_coords, fill="#022c22", outline="") # สีเขียวมืดแรเงา
+        
+        # วาดเส้นกราฟหลัก (Main Line)
+        for i in range(len(coords) - 1):
+            x1, y1 = coords[i]
+            x2, y2 = coords[i+1]
+            self.equity_canvas.create_line(x1, y1, x2, y2, fill="#10b981", width=2.5, smooth=True)
+            # พล็อตจุดวงกลมเล็กๆ บนเส้น
+            self.equity_canvas.create_oval(x1 - 2, y1 - 2, x1 + 2, y1 + 2, fill="#34d399", outline="#059669")
+        # จุดสุดท้าย
+        self.equity_canvas.create_oval(coords[-1][0] - 3, coords[-1][1] - 3, coords[-1][0] + 3, coords[-1][1] + 3, fill="#34d399", outline="#059669")
+
+    def setup_indicator_tab(self):
+        # หน้าจอตรวจสอบค่า Indicator
+        container = tk.Frame(self.tab_indicator, bg="#1e293b", padx=15, pady=15)
+        container.pack(fill="both", expand=True)
+        
+        # Title
+        tk.Label(container, text="Quantum TrendPulse MT5 Indicator Monitor", font=("Outfit", 12, "bold"), bg="#1e293b", fg="#f8fafc").pack(anchor="w", pady=(0, 15))
+        
+        # Grid Frame
+        grid_frame = tk.Frame(container, bg="#1e293b")
+        grid_frame.pack(fill="both", expand=True)
+        
+        # Columns configure
+        grid_frame.columnconfigure((0, 1, 2), weight=1)
+        
+        # สร้าง Card สำหรับแต่ละ Timeframe
+        self.card_m1 = self.create_ind_card(grid_frame, "M1 Chart Signal", 0)
+        self.card_m5 = self.create_ind_card(grid_frame, "M5 Chart Signal", 1)
+        self.card_m15 = self.create_ind_card(grid_frame, "M15 (Main) Signal", 2)
+        
+        # สรุป Alignment และ Confirmation
+        summary_frame = tk.LabelFrame(container, text=" 📊 Alignment & Confirmation Summary ", bg="#1e293b", fg="#94a3b8", font=("Outfit", 9, "bold"), padx=15, pady=10)
+        summary_frame.pack(fill="x", pady=(15, 0))
+        
+        summary_frame.columnconfigure((0, 1), weight=1)
+        
+        # 1. Consensus / Alignment Status
+        align_label_lbl = tk.Label(summary_frame, text="Indicator Consensus (3 Timeframes):", font=("Outfit", 10), bg="#1e293b", fg="#94a3b8")
+        align_label_lbl.grid(row=0, column=0, sticky="w", pady=5)
+        self.lbl_ind_align = tk.Label(summary_frame, text="WAITING FOR CONNECTION", font=("Outfit", 10, "bold"), bg="#1e293b", fg="#fbbf24")
+        self.lbl_ind_align.grid(row=0, column=1, sticky="w", pady=5)
+        
+        # 2. Trigger Confirmation Status
+        confirm_label_lbl = tk.Label(summary_frame, text="M1 Trigger Confirmation:", font=("Outfit", 10), bg="#1e293b", fg="#94a3b8")
+        confirm_label_lbl.grid(row=1, column=0, sticky="w", pady=5)
+        self.lbl_ind_confirm = tk.Label(summary_frame, text="WAITING FOR SIGNAL", font=("Outfit", 10, "bold"), bg="#1e293b", fg="#fbbf24")
+        self.lbl_ind_confirm.grid(row=1, column=1, sticky="w", pady=5)
+        
+        # 3. Update status info
+        self.lbl_ind_update = tk.Label(container, text="Last Update: -", font=("Outfit", 8), bg="#1e293b", fg="#64748b")
+        self.lbl_ind_update.pack(anchor="e", pady=(8, 0))
+
+    def create_ind_card(self, parent, title, col):
+        card = tk.LabelFrame(parent, text=f" {title} ", bg="#0f172a", fg="#94a3b8", font=("Outfit", 9, "bold"), padx=12, pady=10, relief="solid", bd=1)
+        card.grid(row=0, column=col, sticky="nsew", padx=5, pady=5)
+        card.grid_propagate(True)
+        
+        # Direction
+        tk.Label(card, text="Direction:", font=("Outfit", 9), bg="#0f172a", fg="#64748b").grid(row=0, column=0, sticky="w", pady=3)
+        lbl_dir = tk.Label(card, text="NONE", font=("Outfit", 11, "bold"), bg="#0f172a", fg="#94a3b8")
+        lbl_dir.grid(row=0, column=1, sticky="w", pady=3)
+        
+        # Signal Price
+        tk.Label(card, text="Signal Price:", font=("Outfit", 9), bg="#0f172a", fg="#64748b").grid(row=1, column=0, sticky="w", pady=3)
+        lbl_price = tk.Label(card, text="0.00", font=("Outfit", 10, "bold"), bg="#0f172a", fg="#f8fafc")
+        lbl_price.grid(row=1, column=1, sticky="w", pady=3)
+        
+        # Signal Time
+        tk.Label(card, text="Signal Time:", font=("Outfit", 9), bg="#0f172a", fg="#64748b").grid(row=2, column=0, sticky="w", pady=3)
+        lbl_time = tk.Label(card, text="-", font=("Outfit", 9), bg="#0f172a", fg="#94a3b8")
+        lbl_time.grid(row=2, column=1, sticky="w", pady=3)
+        
+        card.columnconfigure(1, weight=1)
+        return {"dir": lbl_dir, "price": lbl_price, "time": lbl_time, "frame": card}
+
+    def refresh_indicator_monitor(self, d_m1, t_m1, p_m1, d_m5, t_m5, p_m5, d_m15, t_m15, p_m15, upd_time, current_price):
+        if not hasattr(self, "lbl_ind_align"):
+            return
+            
+        import datetime
+        
+        # Helper to update card label
+        def update_card(card, d, t, p):
+            if d == 1.0:
+                card["dir"].config(text="BUY", fg="#10b981")
+            elif d == -1.0:
+                card["dir"].config(text="SELL", fg="#ef4444")
+            else:
+                card["dir"].config(text="NONE / HOLD", fg="#94a3b8")
+                
+            card["price"].config(text=f"{p:,.2f}" if p and p > 0 else "0.00")
+            
+            if t and t > 0:
+                dt_str = datetime.datetime.fromtimestamp(t).strftime('%H:%M:%S')
+                card["time"].config(text=dt_str)
+            else:
+                card["time"].config(text="-")
+
+        update_card(self.card_m1, d_m1, t_m1, p_m1)
+        update_card(self.card_m5, d_m5, t_m5, p_m5)
+        update_card(self.card_m15, d_m15, t_m15, p_m15)
+        
+        # Consensus/Alignment checking
+        is_aligned = (d_m1 == d_m5 == d_m15 and d_m1 != 0.0 and d_m1 is not None)
+        if is_aligned:
+            align_txt = f"ALIGNED ({'BUY' if d_m1 == 1.0 else 'SELL'})"
+            align_color = "#10b981"
+        else:
+            align_txt = "NOT ALIGNED (ทิศทางไม่ตรงกัน)"
+            align_color = "#ef4444"
+        self.lbl_ind_align.config(text=align_txt, fg=align_color)
+        
+        # Confirmation checking
+        if is_aligned and p_m15 and p_m15 > 0:
+            if d_m15 == 1.0:
+                is_confirmed = (current_price > p_m15)
+                conf_txt = f"{'CONFIRMED' if is_confirmed else 'WAITING'} (M1 Close: {current_price:.2f} > M15 Ref: {p_m15:.2f})"
+            else:
+                is_confirmed = (current_price < p_m15)
+                conf_txt = f"{'CONFIRMED' if is_confirmed else 'WAITING'} (M1 Close: {current_price:.2f} < M15 Ref: {p_m15:.2f})"
+                
+            conf_color = "#10b981" if is_confirmed else "#fbbf24"
+        else:
+            conf_txt = "WAITING FOR THREE-TIMEFRAME CONSENSUS"
+            conf_color = "#64748b"
+        self.lbl_ind_confirm.config(text=conf_txt, fg=conf_color)
+        
+        if upd_time and upd_time > 0:
+            upd_str = datetime.datetime.fromtimestamp(upd_time).strftime('%Y-%m-%d %H:%M:%S')
+            self.lbl_ind_update.config(text=f"Last EA Terminal Update: {upd_str}")
+        else:
+            self.lbl_ind_update.config(text="Last Update: N/A")
+
+    def show_sim_indicator_monitor(self):
+        if not hasattr(self, "lbl_ind_align"):
+            return
+        self.lbl_ind_align.config(text="OFFLINE (ACTIVE IN MT5 LIVE MODE ONLY)", fg="#64748b")
+        self.lbl_ind_confirm.config(text="OFFLINE (ACTIVE IN MT5 LIVE MODE ONLY)", fg="#64748b")
+        self.lbl_ind_update.config(text="Last Update: N/A")
 
     def close_selected_position(self):
         selected = self.tree_positions.selection()

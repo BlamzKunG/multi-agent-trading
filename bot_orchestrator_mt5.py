@@ -311,17 +311,21 @@ class MT5TradingBotOrchestrator:
                     self.mt5_bridge.cancel_pending_order(p["id"])
                     logging.info(f"🔴 [{strategy_name.upper()}] ยกเลิกคำสั่งล่วงหน้า #{p['id']} เพื่อเคลียร์ออเดอร์เก่า")
             
-            if not quantum_direction:
-                return
-                
-            if quantum_time and quantum_time > last_trig_time:
-                if not confirmation_triggered:
-                    logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: สัญญาณใหม่ยังไม่คอนเฟิร์มบนแท่ง {trigger_label} ข้ามรอบ")
-                    return
-                    
+            # 3. เช็คความพร้อมของเวลาเทรด (Hold Time)
             now = time.time()
             if now < strat.get("next_run_time", 0) and not pending_orders:
                 return
+                
+            # 4. Agent READY! เช็คเงื่อนไขทิศทางพ้อง 3 ไทม์เฟรม (Pre-Check)
+            if not quantum_direction:
+                logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: Agent READY แต่รออินดิเคเตอร์พ้องทิศทางกัน (ดองสถานะพร้อมเทรด)")
+                return
+                
+            # 5. เช็คเงื่อนไขราคาปิดคอนเฟิร์ม (Wait for Confirmation)
+            if quantum_time and quantum_time > last_trig_time:
+                if not confirmation_triggered:
+                    logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: Agent READY แต่รอยืนยันราคาปิด {trigger_label} ปิด {'สูงกว่า' if quantum_direction == 'BUY' else 'ต่ำกว่า'} Ref: {quantum_price:.2f} (ดองสถานะพร้อมเทรด)")
+                    return
                 
             closed_trades = self.mt5_bridge.get_trade_history(symbol=self.symbol, days=15, magic=magic_number)
             perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
