@@ -589,6 +589,10 @@ class MT5TradingBotOrchestrator:
             if lot > max_allowed_lot:
                 lot = max_allowed_lot
                 
+            force_market = False
+            if strat_name == "groq_gen2":
+                force_market = (decision.get("entry_type", "MARKET") == "MARKET")
+                
             res = self.mt5_bridge.open_position(
                 symbol=self.symbol,
                 direction=direction,
@@ -596,7 +600,8 @@ class MT5TradingBotOrchestrator:
                 entry=entry,
                 sl=sl,
                 tp=tp,
-                magic=magic_number
+                magic=magic_number,
+                force_market=force_market
             )
             
             if res.get("status") == "SUCCESS":

@@ -110,15 +110,55 @@ class MockExchange:
         for pos_id, execution_price, reason in closed_ids:
             self._close_position_internal(pos_id, execution_price, reason)
 
-    def open_position(self, direction, lot, sl=None, tp=None, entry=None, magic=123456, symbol="XAUUSD"):
+    def open_position(self, direction, lot, sl=None, tp=None, entry=None, magic=123456, symbol="XAUUSD", force_market=False):
         """
-        เปิดออเดอร์ล่วงหน้า (Pending Order) เสมอในระบบจำลองพอร์ต - ปิดการใช้ Market Order
+        เปิดออเดอร์ล่วงหน้า (Pending Order) หรือ Market Order (เมื่อระบุ force_market=True)
         """
         if direction not in ['BUY', 'SELL']:
             return {"status": "ERROR", "message": "ทิศทางออเดอร์ไม่ถูกต้อง (ต้องเป็น BUY หรือ SELL)"}
             
         if self.current_price <= 0:
             return {"status": "ERROR", "message": "ราคาตลาดปัจจุบันไม่ถูกต้อง (ต้องมากกว่า 0)"}
+            
+        # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
+        final_sl = float(sl) if sl is not None else None
+        final_tp = float(tp) if tp is not None else None
+        
+        if force_market:
+            is_pending = False
+            target_price = self.current_price
+            
+            if direction == "BUY":
+                if final_sl is not None and final_sl >= target_price:
+                    if final_tp is not None and final_tp <= target_price:
+                        final_sl, final_tp = final_tp, final_sl
+                    else:
+                        final_sl = None
+                if final_tp is not None and final_tp <= target_price:
+                    final_tp = None
+            else: # SELL
+                if final_sl is not None and final_sl <= target_price:
+                    if final_tp is not None and final_tp >= target_price:
+                        final_sl, final_tp = final_tp, final_sl
+                    else:
+                        final_sl = None
+                if final_tp is not None and final_tp >= target_price:
+                    final_tp = None
+                    
+            pos_id = str(uuid.uuid4())[:8]
+            new_pos = {
+                "id": pos_id,
+                "direction": direction,
+                "lot": float(lot),
+                "entry_price": float(target_price),
+                "sl": final_sl,
+                "tp": final_tp,
+                "magic": int(magic),
+                "open_time": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            self.open_positions[pos_id] = new_pos
+            logging.info(f"เปิดตำแหน่ง (Market Order) สำเร็จ: {direction} {lot} Lot ที่ราคา {target_price} | SL: {final_sl}, TP: {final_tp} | Magic: {magic}")
+            return {"status": "SUCCESS", "order_id": pos_id, "is_pending": False}
             
         is_pending = True
         
@@ -133,10 +173,6 @@ class MockExchange:
             entry_val = float(entry)
             
         target_price = entry_val
-        
-        # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
-        final_sl = float(sl) if sl is not None else None
-        final_tp = float(tp) if tp is not None else None
         
         if direction == "BUY":
             if final_sl is not None and final_sl >= target_price:

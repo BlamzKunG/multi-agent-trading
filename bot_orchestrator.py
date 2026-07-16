@@ -437,6 +437,10 @@ class TradingBotOrchestrator:
             if lot > max_allowed_lot:
                 lot = max_allowed_lot
                 
+            force_market = False
+            if strat_name == "groq_gen2":
+                force_market = (decision.get("entry_type", "MARKET") == "MARKET")
+                
             res = self.exchange.open_position(
                 symbol=self.symbol,
                 direction=direction,
@@ -444,11 +448,12 @@ class TradingBotOrchestrator:
                 entry=entry,
                 sl=sl,
                 tp=tp,
-                magic=magic_number
+                magic=magic_number,
+                force_market=force_market
             )
             
             if res.get("status") == "SUCCESS":
-                deal_id = res.get("ticket")
+                deal_id = res.get("ticket") or res.get("order_id")
                 is_pending = res.get("is_pending", False)
                 
                 if is_pending:

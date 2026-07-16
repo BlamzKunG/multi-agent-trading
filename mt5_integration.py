@@ -317,14 +317,14 @@ class MT5Integration:
             })
         return positions_list
 
-    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD", magic=123456):
+    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD", magic=123456, force_market=False):
         """
-        ส่งคำสั่งซื้อขายล่วงหน้า (Pending Order) เท่านั้น - ปิดการใช้ Market Order เพื่อป้องกันราคาเสียเปรียบ
+        ส่งคำสั่งซื้อขายล่วงหน้า (Pending Order) หรือ Market Order (หากระบุ force_market=True)
         - direction: 'BUY' หรือ 'SELL'
         - lot: ขนาดสัญญา
         - sl: จุดตัดขาดทุน
         - tp: จุดทำกำไร
-        - entry: ราคาตั้งซื้อขายล่วงหน้า (หากเป็น None จะตั้ง Pending ราคาเบี่ยงเบนห่างราคาตลาดเล็กน้อย)
+        - entry: ราคาตั้งซื้อขายล่วงหน้า (กรณีใช้ Pending)
         - magic: หมายเลข Magic Number ของ Agent
         """
         symbol = self.resolve_symbol(symbol)
@@ -348,7 +348,58 @@ class MT5Integration:
         ask_price = price_info["ask"]
         market_compare_price = ask_price if direction == "BUY" else bid_price
         
-        # บังคับใช้คำสั่งล่วงหน้า (Pending Order) เสมอ
+        # ปรับทศนิยมตัวแปร SL และ TP ให้สอดคล้องกับโบรกเกอร์
+        final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
+        final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
+        
+        if force_market:
+            is_pending = False
+            target_price = ask_price if direction == "BUY" else bid_price
+            order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+            
+            # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
+            if direction == "BUY":
+                if final_sl > 0.0 and final_sl >= target_price:
+                    if final_tp > 0.0 and final_tp <= target_price:
+                        final_sl, final_tp = final_tp, final_sl
+                    else:
+                        final_sl = 0.0
+                if final_tp > 0.0 and final_tp <= target_price:
+                    final_tp = 0.0
+            else: # SELL
+                if final_sl > 0.0 and final_sl <= target_price:
+                    if final_tp > 0.0 and final_tp >= target_price:
+                        final_sl, final_tp = final_tp, final_sl
+                    else:
+                        final_sl = 0.0
+                if final_tp > 0.0 and final_tp >= target_price:
+                    final_tp = 0.0
+                    
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": float(lot),
+                "type": order_type,
+                "price": target_price,
+                "sl": final_sl,
+                "tp": final_tp,
+                "deviation": 20,
+                "magic": int(magic),
+                "comment": "LLM Market Trade",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC
+            }
+            
+            result = mt5.order_send(request)
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                err_msg = f"ส่งคำสั่ง Market {direction} ล้มเหลว: {result.comment} (code: {result.retcode})"
+                logging.error(err_msg)
+                return {"status": "FAILED", "message": err_msg}
+                
+            logging.info(f"เปิดตำแหน่ง (Market Order) สำเร็จผ่าน MT5! Ticket: {result.order} ที่ราคา {target_price}")
+            return {"status": "SUCCESS", "order_id": result.order, "is_pending": False}
+            
+        # บังคับใช้คำสั่งล่วงหน้า (Pending Order)
         is_pending = True
         
         if entry is None:
@@ -378,10 +429,6 @@ class MT5Integration:
                     target_price = market_compare_price - min_stop_distance
             target_price = round(round(target_price / tick_size) * tick_size, digits)
             
-        # ปรับทศนิยมตัวแปร SL และ TP ให้สอดคล้องกับโบรกเกอร์
-        final_sl = round(round(float(sl) / tick_size) * tick_size, digits) if sl else 0.0
-        final_tp = round(round(float(tp) / tick_size) * tick_size, digits) if tp else 0.0
-        
         # ตรวจสอบและแก้ไข SL/TP ในกรณีตั้งกลับทิศทาง (Auto-correct reversed SL/TP)
         if direction == "BUY":
             if final_sl > 0.0 and final_sl >= target_price:
