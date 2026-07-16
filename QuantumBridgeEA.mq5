@@ -5,14 +5,14 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://google.com"
-#property version   "1.20"
+#property version   "1.30"
 #property strict
 
 //--- Input Parameters
 input string             InpIndicatorName  = "Quantum TrendPulse"; // Name of the ex5 indicator (e.g. "Quantum TrendPulse" or "Market\\Quantum TrendPulse")
 input int                InpBuyBuffer      = 4;                    // Buffer index for BUY signals
 input int                InpSellBuffer     = 5;                    // Buffer index for SELL signals
-input int                InpScanBars       = 1000;                 // Number of historical bars to scan (default 1000 to find deep signals)
+input int                InpScanBars       = 1000;                 // Max historical bars to scan
 
 //--- Global Handles
 int handle_m1  = INVALID_HANDLE;
@@ -30,7 +30,7 @@ int OnInit()
    ResetLastError();
    handle_m1  = iCustom(_Symbol, PERIOD_M1,  InpIndicatorName);
    if (handle_m1 == INVALID_HANDLE) {
-      PrintFormat("❌ [QuantumBridgeEA] Failed to create handle for M1. Error: %d. (Check indicator name or path)", GetLastError());
+      PrintFormat("❌ [QuantumBridgeEA] Failed to create handle for M1. Error: %d.", GetLastError());
    }
    
    ResetLastError();
@@ -47,7 +47,7 @@ int OnInit()
    
    if(handle_m1 == INVALID_HANDLE || handle_m5 == INVALID_HANDLE || handle_m15 == INVALID_HANDLE)
    {
-      Print("❌ [QuantumBridgeEA] Initialization failed due to invalid handles. Please check if the indicator is in the correct folder (e.g. 'Market\\Quantum TrendPulse' if downloaded from MQL5 Market).");
+      Print("❌ [QuantumBridgeEA] Initialization failed due to invalid handles. Check indicator name or path.");
       return(INIT_FAILED);
    }
    
@@ -79,18 +79,27 @@ bool GetLatestSignal(int handle, ENUM_TIMEFRAMES tf, double &direction, datetime
    ArraySetAsSeries(sell_buffer, true);
    ArraySetAsSeries(times, true);
    
+   // ป้องกันปัญหาการขอ Copy เกินแท่งประวัติที่มีจริงบนชาร์ต (iBars) ซึ่งจะทำให้ CopyBuffer ล้มเหลวและได้ค่า -1
+   int available_bars = iBars(_Symbol, tf);
+   int scan_bars = MathMin(InpScanBars, available_bars);
+   if (scan_bars <= 0) {
+      direction = 0.0;
+      sig_time = 0;
+      sig_price = 0.0;
+      return false;
+   }
+   
    ResetLastError();
-   int copied_buy = CopyBuffer(handle, InpBuyBuffer, 0, InpScanBars, buy_buffer);
-   int copied_sell = CopyBuffer(handle, InpSellBuffer, 0, InpScanBars, sell_buffer);
-   int copied_time = CopyTime(_Symbol, tf, 0, InpScanBars, times);
+   int copied_buy = CopyBuffer(handle, InpBuyBuffer, 0, scan_bars, buy_buffer);
+   int copied_sell = CopyBuffer(handle, InpSellBuffer, 0, scan_bars, sell_buffer);
+   int copied_time = CopyTime(_Symbol, tf, 0, scan_bars, times);
    
    if(copied_buy <= 0 || copied_sell <= 0 || copied_time <= 0)
    {
-      // Output error once in a while to avoid log spamming
       static datetime last_err_time = 0;
       if (TimeCurrent() - last_err_time > 10) {
-         PrintFormat("⚠️ [QuantumBridgeEA] CopyBuffer failed for %s. BuyCopied: %d, SellCopied: %d, TimeCopied: %d. Error Code: %d", 
-                     EnumToString(tf), copied_buy, copied_sell, copied_time, GetLastError());
+         PrintFormat("⚠️ [QuantumBridgeEA] CopyBuffer failed for %s. Available Bars: %d, Requested: %d. BuyCopied: %d, SellCopied: %d, TimeCopied: %d. Error Code: %d", 
+                     EnumToString(tf), available_bars, scan_bars, copied_buy, copied_sell, copied_time, GetLastError());
          last_err_time = TimeCurrent();
       }
       direction = 0.0;
@@ -102,7 +111,7 @@ bool GetLatestSignal(int handle, ENUM_TIMEFRAMES tf, double &direction, datetime
    int latest_buy_idx = -1;
    int latest_sell_idx = -1;
    
-   for(int i = 0; i < InpScanBars; i++)
+   for(int i = 0; i < scan_bars; i++)
    {
       if(latest_buy_idx == -1 && buy_buffer[i] != EMPTY_VALUE && buy_buffer[i] != 0.0)
       {
