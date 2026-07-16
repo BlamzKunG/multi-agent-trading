@@ -53,6 +53,17 @@ class TradingBotOrchestrator:
                 "trailing_distance_mult": 1.5,
                 "trailing_step_mult": 0.3,
                 "next_run_time": 0
+            },
+            "groq_gen2": {
+                "magic": 444444,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": False,
+                "trailing_atr_tf": "15m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
             }
         }
         self.scalping_next_run = {
@@ -253,6 +264,15 @@ class TradingBotOrchestrator:
                     performance_stats=perf_stats, trade_history=closed_trades,
                     regime_report=regime,
                     pending_orders=pending_orders, quantum_direction=None
+                )
+            elif strategy_name == "groq_gen2":
+                df_15m = self.data_feed.get_historical_data(interval="15m", period="2d")
+                decision = self.agents.analyze_groq_gen2(
+                    df_15m=df_15m,
+                    balance=balance, symbol=self.symbol,
+                    leverage=self.exchange.leverage, spread=0.0,
+                    performance_stats=perf_stats, trade_history=closed_trades,
+                    pending_orders=pending_orders
                 )
                 
             if decision:

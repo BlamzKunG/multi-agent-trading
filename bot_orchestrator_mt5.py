@@ -51,6 +51,17 @@ class MT5TradingBotOrchestrator:
                 "trailing_distance_mult": 1.5,
                 "trailing_step_mult": 0.3,
                 "next_run_time": 0
+            },
+            "groq_gen2": {
+                "magic": 444444,
+                "enabled": True,
+                "max_lot": 0.05,
+                "trailing_enabled": False,
+                "trailing_atr_tf": "15m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.5,
+                "trailing_step_mult": 0.3,
+                "next_run_time": 0
             }
         }
         self.scalping_next_run = {
@@ -305,27 +316,28 @@ class MT5TradingBotOrchestrator:
                 
             pending_orders = self.mt5_bridge.get_pending_orders(self.symbol, magic=magic_number)
             
-            # ลบ Pending เก่าถ้าทิศทางเปลี่ยน
-            if pending_orders and (not quantum_direction or (quantum_time and quantum_time > last_trig_time)):
-                for p in pending_orders:
-                    self.mt5_bridge.cancel_pending_order(p["id"])
-                    logging.info(f"🔴 [{strategy_name.upper()}] ยกเลิกคำสั่งล่วงหน้า #{p['id']} เพื่อเคลียร์ออเดอร์เก่า")
+            # ลบ Pending เก่าถ้าทิศทางเปลี่ยน (เฉพาะกรณี Day/Swing ที่อิงตามตัวสัญญาณอินดิเคเตอร์หลัก)
+            if strategy_name != "groq_gen2":
+                if pending_orders and (not quantum_direction or (quantum_time and quantum_time > last_trig_time)):
+                    for p in pending_orders:
+                        self.mt5_bridge.cancel_pending_order(p["id"])
+                        logging.info(f"🔴 [{strategy_name.upper()}] ยกเลิกคำสั่งล่วงหน้า #{p['id']} เพื่อเคลียร์ออเดอร์เก่า")
             
             # 3. เช็คความพร้อมของเวลาเทรด (Hold Time)
             now = time.time()
             if now < strat.get("next_run_time", 0) and not pending_orders:
                 return
                 
-            # 4. Agent READY! เช็คเงื่อนไขทิศทางพ้อง 3 ไทม์เฟรม (Pre-Check)
-            if not quantum_direction:
-                logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: Agent READY แต่รออินดิเคเตอร์พ้องทิศทางกัน (ดองสถานะพร้อมเทรด)")
-                return
-                
-            # 5. เช็คเงื่อนไขราคาปิดคอนเฟิร์ม (Wait for Confirmation)
-            if quantum_time and quantum_time > last_trig_time:
-                if not confirmation_triggered:
-                    logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: Agent READY แต่รอยืนยันราคาปิด {trigger_label} ปิด {'สูงกว่า' if quantum_direction == 'BUY' else 'ต่ำกว่า'} Ref: {quantum_price:.2f} (ดองสถานะพร้อมเทรด)")
+            # 4. Agent READY! (เช็คเงื่อนไขทิศทางสำหรับ Day/Swing เท่านั้น ส่วน Groq Gen 2 รันอิสระ)
+            if strategy_name != "groq_gen2":
+                if not quantum_direction:
+                    logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: Agent READY แต่รออินดิเคเตอร์พ้องทิศทางกัน (ดองสถานะพร้อมเทรด)")
                     return
+                    
+                if quantum_time and quantum_time > last_trig_time:
+                    if not confirmation_triggered:
+                        logging.info(f"⏳ [Autopilot] {strategy_name.upper()}: Agent READY แต่รอยืนยันราคาปิด {trigger_label} ปิด {'สูงกว่า' if quantum_direction == 'BUY' else 'ต่ำกว่า'} Ref: {quantum_price:.2f} (ดองสถานะพร้อมเทรด)")
+                        return
                 
             closed_trades = self.mt5_bridge.get_trade_history(symbol=self.symbol, days=15, magic=magic_number)
             perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
@@ -359,9 +371,43 @@ class MT5TradingBotOrchestrator:
                     pending_orders=pending_orders,
                     quantum_direction=quantum_direction
                 )
+            elif strategy_name == "groq_gen2":
+                df_15m = self.mt5_bridge.get_historical_data(symbol=self.symbol, timeframe="15m", num_candles=100)
+                df_15m_pa = self.agents._analyze_price_action(df_15m)
+                atr_15m = float(df_15m_pa['atr_14'].iloc[-1]) if not df_15m_pa.empty else 0.0
+                
+                decision = self.agents.analyze_groq_gen2(
+                    df_15m=df_15m,
+                    balance=balance, symbol=self.symbol,
+                    leverage=100.0, spread=spread,
+                    performance_stats=perf_stats, trade_history=closed_trades,
+                    pending_orders=pending_orders
+                )
+                
+                # ประมวลผลเกณฑ์กรองความมั่นใจ Confidence Filter และระดับคำนวณ ATR Mode
+                if decision:
+                    action = decision.get("action")
+                    confidence = int(decision.get("confidence", 0))
+                    entry = decision.get("entry")
+                    
+                    if action in ["BUY", "SELL", "CANCEL_AND_NEW"]:
+                        if confidence < 70:
+                            logging.info(f"🟡 [Groq Gen2] สัญญาณความมั่นใจ ({confidence}%) ต่ำกว่าเกณฑ์ขั้นต่ำ 70%. บังคับยกเลิกออเดอร์ (เปลี่ยนเป็น HOLD)")
+                            decision["action"] = "HOLD"
+                            decision["hold_minutes"] = 15
+                        else:
+                            # คำนวณระยะ SL/TP ตาม ATR Mode (SL = ATR * 2 | TP = ATR * 3)
+                            if entry and entry > 0 and atr_15m > 0:
+                                if action == "BUY" or (action == "CANCEL_AND_NEW" and "BUY" in str(decision.get("reasoning", "")).upper()):
+                                    decision["sl"] = round(entry - (atr_15m * 2.0), 2)
+                                    decision["tp"] = round(entry + (atr_15m * 3.0), 2)
+                                else:  # SELL
+                                    decision["sl"] = round(entry + (atr_15m * 2.0), 2)
+                                    decision["tp"] = round(entry - (atr_15m * 3.0), 2)
+                                logging.info(f"📐 [Groq Gen2] คำนวณระยะ ATR Mode สำเร็จ: Entry={entry:.2f} | SL={decision['sl']:.2f} (2xATR) | TP={decision['tp']:.2f} (3xATR)")
                 
             if decision:
-                if quantum_time and quantum_time > last_trig_time:
+                if strategy_name != "groq_gen2" and quantum_time and quantum_time > last_trig_time:
                     state["last_triggered_signal_time"][strategy_name] = quantum_time
                     self.save_bot_state(state)
                 self.execute_decision(strategy_name, decision, magic_number, pending_orders, strat)

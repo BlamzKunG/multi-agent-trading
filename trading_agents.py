@@ -1029,3 +1029,51 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ], json_response=True, category="analysis")
         
         return proposal
+
+    def analyze_groq_gen2(self, df_15m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, pending_orders=None):
+        """
+        4) Groq Gen 2 v3.13 Agent: Independent strategy running every 15 minutes on M15 timeframe.
+        Analyzes price actions, ATR, and returns decision with confidence.
+        """
+        model = self.analysis_model
+        
+        df_15m_pa = self._analyze_price_action(df_15m)
+        current_price = float(df_15m_pa['close'].iloc[-1])
+        atr_15m = float(df_15m_pa['atr_14'].iloc[-1])
+        
+        cio_system = f"""คุณคือ AI Groq GEN 2 v3.13 Trading Agent ผู้เชี่ยวชาญการประเมินราคาและการวิเคราะห์โครงสร้างทองคำ ({symbol}) บนไทม์เฟรม M15
+หน้าที่ของคุณคือการวิเคราะห์ราคาปัจจุบัน ประวัติแท่งเทียนล่าสุด และวิเคราะห์ทิศทางที่น่าจะเป็นเพื่อหาเป้าหมายทำกำไร
+คุณต้องตอบกลับผลการวิเคราะห์และแผนตัดสินใจในรูปแบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "action": "BUY" | "SELL" | "HOLD" | "MODIFY" | "CANCEL" | "CANCEL_AND_NEW",
+  "ticket": int_หรือ_string_หรือ_null, // ใส่ Ticket ID หากต้องการจัดการคำสั่งล่วงหน้าเดิมที่มีอยู่ (ระบุจากลิสต์ด้านล่าง)
+  "confidence": int, // น้ำหนักความมั่นใจในการออกออเดอร์ครั้งนี้เป็นจำนวนเต็มเปอร์เซ็นต์ (0 ถึง 100)
+  "entry": float, // ราคาเป้าหมายสำหรับวางคำสั่งตั้งรอ (Pending Order) ในจุดที่ได้เปรียบเชิงโครงสร้าง ห้ามใส่ null เผื่อเป็น BUY/SELL
+  "hold_minutes": 15 | 30 | 45 | 60, // กรณีตอบ HOLD หรือต้องการหน่วงเวลา รอแท่งถัดไป ให้เลือกระบุช่วงเวลาพัก
+  "reasoning": "ประโยคสรุปเหตุผลทางเทคนิคัลในการเทรดอิงราคา M15 ล่าสุด"
+}}
+
+กติกาและขอบเขต:
+1. การระบุระดับราคาเข้า (entry) ต้องเลือกตั้งรอ ณ จุดที่ได้เปรียบทางเทคนิคัลที่มีนัยสำคัญจริงๆ บนไทม์เฟรม M15 (เช่น แนว EMA 50/200, สวิงโลว์/ไฮเดิม หรือกรอบแนวต้านรับย่อย) ห้ามใส่ราคาปัจจุบันทศนิยมเศษน้อยๆ ส่งแบบเด็ดขาด
+2. สำหรับคำสั่งล่วงหน้า (Pending Order) เก่า: คุณสามารถประเมินเป็น HOLD (ถือต่อ), MODIFY (เลื่อนราคาหรือเลื่อนค่า), หรือ CANCEL (ยกเลิกตั๋วเดิม) ได้ตามความเหมาะสม"""
+
+        pending_str = json.dumps(pending_orders, indent=2) if pending_orders else "ไม่มีคำสั่งล่วงหน้าค้างอยู่"
+        reflection_context = self._format_reflection(performance_stats, trade_history)
+        
+        cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol} ล่าสุด: {current_price:.2f} | ค่า ATR(14, M15): {atr_15m:.2f}
+รายงานคำสั่งล่วงหน้า (Pending Orders) ของกลยุทธ์นี้ที่ยังไม่ทำงาน:
+{pending_str}
+
+ประวัติแท่งเทียน M15 ย้อนหลัง 50 แท่ง:
+{self._format_candles_brief(df_15m_pa, 50)}
+{reflection_context}
+
+จงตอบสรุปผลวิเคราะห์ Groq Gen 2 ในรูปแบบ JSON:"""
+
+        logging.info("Groq Gen 2 Agent: เริ่มเรียกใช้โมเดลวิเคราะห์ทิศทาง M15...")
+        proposal = self._call_llm(model, [
+            {"role": "system", "content": cio_system},
+            {"role": "user", "content": cio_user}
+        ], json_response=True, category="analysis")
+        
+        return proposal

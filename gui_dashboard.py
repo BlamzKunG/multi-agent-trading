@@ -120,7 +120,8 @@ class TradingBotGUI:
         self.last_run_times = {
             "scalping": 0,
             "daytrading": 0,
-            "swingtrading": 0
+            "swingtrading": 0,
+            "groq_gen2": 0
         }
         
         # กำหนดตัวแปรกราฟิก
@@ -160,6 +161,17 @@ class TradingBotGUI:
                 "interval": tk.StringVar(value="240"),
                 "trailing_enabled": tk.BooleanVar(value=False),
                 "trailing_atr_tf": tk.StringVar(value="1h"),
+                "trailing_activation_mult": tk.StringVar(value="1.5"),
+                "trailing_distance_mult": tk.StringVar(value="1.5"),
+                "trailing_step_mult": tk.StringVar(value="0.3")
+            },
+            "groq_gen2": {
+                "enabled": tk.BooleanVar(value=True),
+                "magic": tk.StringVar(value="444444"),
+                "max_lot": tk.StringVar(value="0.05"),
+                "interval": tk.StringVar(value="15"),
+                "trailing_enabled": tk.BooleanVar(value=False),
+                "trailing_atr_tf": tk.StringVar(value="15m"),
                 "trailing_activation_mult": tk.StringVar(value="1.5"),
                 "trailing_distance_mult": tk.StringVar(value="1.5"),
                 "trailing_step_mult": tk.StringVar(value="0.3")
@@ -215,6 +227,11 @@ class TradingBotGUI:
         self.config_tabs.add(self.tab_swing, text=" 📈 Swing ")
         self.setup_strategy_tab(self.tab_swing, "swingtrading")
         
+        # 5. แท็บ Groq Gen2 Agent
+        self.tab_groq = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
+        self.config_tabs.add(self.tab_groq, text=" 🤖 Groq Gen2 ")
+        self.setup_strategy_tab(self.tab_groq, "groq_gen2")
+        
         # สวิตช์และปุ่มควบคุมระบบออโต้/แมนนวล ด้านล่างของ Left Panel
         control_frame = tk.LabelFrame(self.left_panel, text="🚦 Control Room", bg="#1e293b", fg="#fbbf24", font=self.font_label, padx=10, pady=5)
         control_frame.pack(fill="x", pady=5)
@@ -237,6 +254,9 @@ class TradingBotGUI:
         
         btn_swing = tk.Button(manual_btn_frame, text="Run Swing", font=("Outfit", 8, "bold"), bg="#3b82f6", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("swingtrading"))
         btn_swing.pack(side="left", expand=True, fill="x", padx=1)
+        
+        btn_groq = tk.Button(manual_btn_frame, text="Run GroqGen2", font=("Outfit", 8, "bold"), bg="#a855f7", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("groq_gen2"))
+        btn_groq.pack(side="left", expand=True, fill="x", padx=1)
         
         self.lbl_sched_status = tk.Label(control_frame, text="สถานะ: หยุดการทำงานออโต้", font=self.font_label, bg="#1e293b", fg="#ef4444")
         self.lbl_sched_status.pack(pady=3)
@@ -618,8 +638,8 @@ class TradingBotGUI:
         if srv:
             bot_mt5.mt5_bridge.server = srv
             
-        # สมัครโครงสร้างกลยุทธ์ทั้ง 3 ตัวเข้าสู่บอทประมวลผล
-        for name in ["scalping", "daytrading", "swingtrading"]:
+        # สมัครโครงสร้างกลยุทธ์ทั้งหมดเข้าสู่บอทประมวลผล
+        for name in ["scalping", "daytrading", "swingtrading", "groq_gen2"]:
             s_cfg = cfg.get(name, {})
             if s_cfg:
                 for bot in [bot_sim, bot_mt5]:
@@ -646,8 +666,9 @@ class TradingBotGUI:
             t_sc = self.strat_vars["scalping"]["interval"].get()
             t_dt = self.strat_vars["daytrading"]["interval"].get()
             t_sw = self.strat_vars["swingtrading"]["interval"].get()
+            t_gq = self.strat_vars["groq_gen2"]["interval"].get()
             self.lbl_sched_status.config(
-                text=f"สถานะ: Auto-Pilot ทำงาน (Scalp:{t_sc}m | Day:{t_dt}m | Swing:{t_sw}m)", 
+                text=f"สถานะ: Auto-Pilot ทำงาน (Scalp:{t_sc}m | Day:{t_dt}m | Swing:{t_sw}m | Groq:{t_gq}m)", 
                 fg="#10b981"
             )
         else:
@@ -766,7 +787,7 @@ class TradingBotGUI:
                     history = status.get("history", [])
                     
                     # คำนวณ Performance สถิติรายตัว
-                    for name in ["scalping", "daytrading", "swingtrading"]:
+                    for name in ["scalping", "daytrading", "swingtrading", "groq_gen2"]:
                         try:
                             mag = int(self.strat_vars[name]["magic"].get())
                             if name == "scalping":
@@ -809,7 +830,7 @@ class TradingBotGUI:
                         symbol = bot_mt5.symbol
                         
                         # คำนวณ Performance
-                        for name in ["scalping", "daytrading", "swingtrading"]:
+                        for name in ["scalping", "daytrading", "swingtrading", "groq_gen2"]:
                             try:
                                 mag = int(self.strat_vars[name]["magic"].get())
                                 if name == "scalping":
