@@ -763,6 +763,7 @@ class MT5Integration:
         if not self.connect():
             return None
         import MetaTrader5 as mt5
-        if mt5.global_variable_exists(name):
+        try:
             return mt5.global_variable_get(name)
-        return None
+        except Exception:
+            return None
