@@ -16,6 +16,71 @@ class MT5Integration:
         self.password = password
         self.server = server
         self.initialized = False
+        
+        # คอนฟิกแชร์ข้อมูลสัญญาณอินดิเคเตอร์ผ่าน HTTP WebRequest ของ MQL5
+        self.quantum_signals = {
+            "m1_dir": 0.0, "m1_time": 0.0, "m1_price": 0.0,
+            "m5_dir": 0.0, "m5_time": 0.0, "m5_price": 0.0,
+            "m15_dir": 0.0, "m15_time": 0.0, "m15_price": 0.0,
+            "update_time": 0.0
+        }
+        self.start_http_server()
+
+    def start_http_server(self):
+        """เริ่มต้น HTTP server แบบเบื้องหลังเพื่อรับสัญญาณจาก MT5 EA"""
+        import threading
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import json
+        import time
+        
+        bridge_instance = self
+        
+        class SignalHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                # ปิด Log เพื่อไม่ให้ขยะบนคอนโซล
+                pass
+                
+            def do_POST(self):
+                if self.path == '/api/signals':
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length)
+                    try:
+                        data = json.loads(post_data.decode('utf-8'))
+                        bridge_instance.quantum_signals.update({
+                            "m1_dir": float(data.get("m1_dir", 0.0)),
+                            "m1_time": float(data.get("m1_time", 0.0)),
+                            "m1_price": float(data.get("m1_price", 0.0)),
+                            "m5_dir": float(data.get("m5_dir", 0.0)),
+                            "m5_time": float(data.get("m5_time", 0.0)),
+                            "m5_price": float(data.get("m5_price", 0.0)),
+                            "m15_dir": float(data.get("m15_dir", 0.0)),
+                            "m15_time": float(data.get("m15_time", 0.0)),
+                            "m15_price": float(data.get("m15_price", 0.0)),
+                            "update_time": time.time()
+                        })
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(b'{"status":"SUCCESS"}')
+                    except Exception as e:
+                        self.send_response(400)
+                        self.end_headers()
+                        self.wfile.write(f'{{"error":"{str(e)}"}}'.encode('utf-8'))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    
+        def run_server():
+            try:
+                server_address = ('127.0.0.1', 8018)
+                httpd = HTTPServer(server_address, SignalHandler)
+                logging.info("📡 [HTTP Server] เริ่มต้นเซิร์ฟเวอร์รับสัญญาณที่ http://127.0.0.1:8018")
+                httpd.serve_forever()
+            except Exception as e:
+                logging.error(f"❌ ไม่สามารถเริ่ม HTTP Server ได้: {e}")
+            
+        t = threading.Thread(target=run_server, daemon=True)
+        t.start()
 
     def connect(self):
         """เชื่อมต่อกับโปรแกรม MT5 Terminal"""
@@ -762,7 +827,25 @@ class MT5Integration:
         return history_list
 
     def get_global_variable(self, name):
-        """ดึงค่าตัวแปร Global จาก MT5 Terminal"""
+        """ดึงค่าตัวแปรผ่านหน่วยความจำแคชของ HTTP WebRequest API หรือจาก MT5 จริง"""
+        # แมปตัวแปรดึงสัญญาณ Quantum เข้ามาที่ API Cache Memory
+        mapping = {
+            "QUANTUM_M1_DIR": "m1_dir",
+            "QUANTUM_M1_TIME": "m1_time",
+            "QUANTUM_M1_PRICE": "m1_price",
+            "QUANTUM_M5_DIR": "m5_dir",
+            "QUANTUM_M5_TIME": "m5_time",
+            "QUANTUM_M5_PRICE": "m5_price",
+            "QUANTUM_M15_DIR": "m15_dir",
+            "QUANTUM_M15_TIME": "m15_time",
+            "QUANTUM_M15_PRICE": "m15_price",
+            "QUANTUM_UPDATE_TIME": "update_time"
+        }
+        
+        if name in mapping:
+            return self.quantum_signals.get(mapping[name], 0.0)
+            
+        # Fallback ในกรณีเช็คตัวแปรอื่นที่อยู่นอกเหนือจากระบบสัญญาณ
         if not self.connect():
             return None
         import MetaTrader5 as mt5

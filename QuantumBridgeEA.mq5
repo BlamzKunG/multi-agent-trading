@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://google.com"
-#property version   "1.30"
+#property version   "2.00"
 #property strict
 
 //--- Input Parameters
@@ -13,6 +13,7 @@ input string             InpIndicatorName  = "Quantum TrendPulse"; // Name of th
 input int                InpBuyBuffer      = 4;                    // Buffer index for BUY signals
 input int                InpSellBuffer     = 5;                    // Buffer index for SELL signals
 input int                InpScanBars       = 1000;                 // Max historical bars to scan
+input string             InpServerURL      = "http://127.0.0.1:8018/api/signals"; // URL of local Python API
 
 //--- Global Handles
 int handle_m1  = INVALID_HANDLE;
@@ -25,6 +26,7 @@ int handle_m15 = INVALID_HANDLE;
 int OnInit()
 {
    Print("🚀 [QuantumBridgeEA] Initializing Expert Advisor...");
+   Print("⚠️ [QuantumBridgeEA] IMPORTANT: Please make sure 'http://127.0.0.1:8018' is added to allowed WebRequest URLs in MT5 settings (Tools -> Options -> Expert Advisors).");
    
    // Initialize handles for M1, M5, M15
    ResetLastError();
@@ -79,7 +81,6 @@ bool GetLatestSignal(int handle, ENUM_TIMEFRAMES tf, double &direction, datetime
    ArraySetAsSeries(sell_buffer, true);
    ArraySetAsSeries(times, true);
    
-   // ป้องกันปัญหาการขอ Copy เกินแท่งประวัติที่มีจริงบนชาร์ต (iBars) ซึ่งจะทำให้ CopyBuffer ล้มเหลวและได้ค่า -1
    int available_bars = iBars(_Symbol, tf);
    int scan_bars = MathMin(InpScanBars, available_bars);
    if (scan_bars <= 0) {
@@ -96,12 +97,6 @@ bool GetLatestSignal(int handle, ENUM_TIMEFRAMES tf, double &direction, datetime
    
    if(copied_buy <= 0 || copied_sell <= 0 || copied_time <= 0)
    {
-      static datetime last_err_time = 0;
-      if (TimeCurrent() - last_err_time > 10) {
-         PrintFormat("⚠️ [QuantumBridgeEA] CopyBuffer failed for %s. Available Bars: %d, Requested: %d. BuyCopied: %d, SellCopied: %d, TimeCopied: %d. Error Code: %d", 
-                     EnumToString(tf), available_bars, scan_bars, copied_buy, copied_sell, copied_time, GetLastError());
-         last_err_time = TimeCurrent();
-      }
       direction = 0.0;
       sig_time = 0;
       sig_price = 0.0;
@@ -151,6 +146,11 @@ bool GetLatestSignal(int handle, ENUM_TIMEFRAMES tf, double &direction, datetime
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // Rate limit: ส่งข้อมูลทุกๆ 1 วินาที (1000 ms) เพื่อประหยัด CPU ของระบบ
+   static uint last_send_tick = 0;
+   if(GetTickCount() - last_send_tick < 1000) return;
+   last_send_tick = GetTickCount();
+
    double dir_m1 = 0, dir_m5 = 0, dir_m15 = 0;
    datetime time_m1 = 0, time_m5 = 0, time_m15 = 0;
    double price_m1 = 0, price_m5 = 0, price_m15 = 0;
@@ -160,18 +160,37 @@ void OnTick()
    GetLatestSignal(handle_m5,  PERIOD_M5,  dir_m5,  time_m5,  price_m5);
    GetLatestSignal(handle_m15, PERIOD_M15, dir_m15, time_m15, price_m15);
    
-   // Set MT5 Global Variables for all three timeframes
-   GlobalVariableSet("QUANTUM_M1_DIR", dir_m1);
-   GlobalVariableSet("QUANTUM_M1_TIME", (double)time_m1);
-   GlobalVariableSet("QUANTUM_M1_PRICE", price_m1);
+   // ส่งข้อมูลไปยัง Python API ผ่าน WebRequest ของ MQL5
+   string cookie = NULL, headers;
+   char post[], result[];
+   string result_headers;
    
-   GlobalVariableSet("QUANTUM_M5_DIR", dir_m5);
-   GlobalVariableSet("QUANTUM_M5_TIME", (double)time_m5);
-   GlobalVariableSet("QUANTUM_M5_PRICE", price_m5);
+   // สร้าง JSON String
+   string json = StringFormat(
+      "{\"m1_dir\":%.1f,\"m1_time\":%d,\"m1_price\":%.5f,"
+      "\"m5_dir\":%.1f,\"m5_time\":%d,\"m5_price\":%.5f,"
+      "\"m15_dir\":%.1f,\"m15_time\":%d,\"m15_price\":%.5f}",
+      dir_m1, (long)time_m1, price_m1,
+      dir_m5, (long)time_m5, price_m5,
+      dir_m15, (long)time_m15, price_m15
+   );
    
-   GlobalVariableSet("QUANTUM_M15_DIR", dir_m15);
-   GlobalVariableSet("QUANTUM_M15_TIME", (double)time_m15);
-   GlobalVariableSet("QUANTUM_M15_PRICE", price_m15);
+   StringToCharArray(json, post, 0, StringLen(json));
+   headers = "Content-Type: application/json\r\n";
    
-   GlobalVariableSet("QUANTUM_UPDATE_TIME", (double)TimeCurrent());
+   ResetLastError();
+   int res = WebRequest("POST", InpServerURL, cookie, NULL, 500, post, 0, result, result_headers);
+   
+   if(res == -1)
+   {
+      static datetime last_warn_time = 0;
+      if (TimeCurrent() - last_warn_time > 10) {
+         int err = GetLastError();
+         PrintFormat("❌ [QuantumBridgeEA] WebRequest to Python failed. Error Code: %d", err);
+         if (err == 4014) {
+            Print("⚠️ [QuantumBridgeEA] Error 4014 means URL is not allowed. Please add 'http://127.0.0.1:8018' in MT5 -> Tools -> Options -> Expert Advisors -> Allow WebRequest.");
+         }
+         last_warn_time = TimeCurrent();
+      }
+   }
 }
