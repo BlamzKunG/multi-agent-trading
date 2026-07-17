@@ -87,6 +87,7 @@ class TradingBotOrchestrator:
                 "fixed_sl_points": 500,
                 "fixed_tp_points": 1000,
                 "daily_quota_enabled": True,
+                "confidence_threshold": 70,
                 "quick_close_enabled": True,
                 "next_run_time": 0
             }
@@ -379,8 +380,9 @@ class TradingBotOrchestrator:
                         logging.info(f"🔄 [Sim Mode - Custom Agent] เปิดใช้งาน Reverse Mode: สลับคำสั่งจาก {old_action} เป็น {action}")
                         
                     if action in ["BUY", "SELL"]:
-                        if confidence < 70:
-                            logging.info(f"🟡 [Sim Mode - Custom Agent] สัญญาณความมั่นใจ ({confidence}%) ต่ำกว่าเกณฑ์ขั้นต่ำ 70%. บังคับข้ามรอบ (เปลี่ยนเป็น HOLD)")
+                        conf_threshold = int(strat.get("confidence_threshold", 70))
+                        if confidence < conf_threshold:
+                            logging.info(f"🟡 [Sim Mode - Custom Agent] สัญญาณความมั่นใจ ({confidence}%) ต่ำกว่าเกณฑ์ขั้นต่ำ {conf_threshold}%. บังคับข้ามรอบ (เปลี่ยนเป็น HOLD)")
                             decision["action"] = "HOLD"
                             decision["hold_minutes"] = 5
                         else:

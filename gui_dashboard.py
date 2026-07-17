@@ -193,6 +193,7 @@ class TradingBotGUI:
                 "quick_close_profit": tk.StringVar(value="9.0"),
                 "daily_profit_target": tk.StringVar(value="100.0"),
                 "daily_loss_limit": tk.StringVar(value="30.0"),
+                "confidence_threshold": tk.StringVar(value="70"),
                 "daily_quota_enabled": tk.BooleanVar(value=True),
                 "quick_close_enabled": tk.BooleanVar(value=True),
                 "reverse_mode": tk.BooleanVar(value=False),
@@ -484,6 +485,7 @@ class TradingBotGUI:
         add_row(f_gen, "Magic Number", vars_dict["magic"])
         add_row(f_gen, "Lot Size คงที่", vars_dict["lot_size"])
         add_row(f_gen, "Run Interval (นาที)", vars_dict["interval"])
+        add_row(f_gen, "เกณฑ์ความมั่นใจขั้นต่ำ (%)", vars_dict["confidence_threshold"])
         
         # 2. Risk Management Group
         f_risk = tk.LabelFrame(scrollable_frame, text="🛡️ Risk & Target Setup", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
