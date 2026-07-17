@@ -110,7 +110,7 @@ class MockExchange:
         for pos_id, execution_price, reason in closed_ids:
             self._close_position_internal(pos_id, execution_price, reason)
 
-    def open_position(self, direction, lot, sl=None, tp=None, entry=None, magic=123456, symbol="XAUUSD", force_market=False):
+    def open_position(self, direction, lot, sl=None, tp=None, entry=None, magic=123456, symbol="XAUUSD", force_market=False, comment=None):
         """
         เปิดออเดอร์ล่วงหน้า (Pending Order) หรือ Market Order (เมื่อระบุ force_market=True)
         """

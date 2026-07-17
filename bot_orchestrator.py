@@ -66,6 +66,17 @@ class TradingBotOrchestrator:
                 "next_run_time": 0
             }
         }
+        # ตั้งค่าเริ่มต้นของ groq_gen2 ให้รอเริ่มรันที่รอบ M15 ถัดไปที่ตรง 15 นาทีของชั่วโมง
+        import datetime
+        now_ts = time.time()
+        now_dt = datetime.datetime.fromtimestamp(now_ts)
+        minute = now_dt.minute
+        next_minute = ((minute // 15) + 1) * 15
+        if next_minute >= 60:
+            next_dt = now_dt.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)
+        else:
+            next_dt = now_dt.replace(minute=next_minute, second=0, microsecond=0)
+        self.strategies["groq_gen2"]["next_run_time"] = next_dt.timestamp()
         self.scalping_next_run = {
             "TREND_PULLBACK": 0.0,
             "BREAKOUT": 0.0,
@@ -376,7 +387,23 @@ class TradingBotOrchestrator:
                     hold_min = hold_min_val
             else:
                 hold_min = int(hold_min_val or 60)
-            strat_cfg["next_run_time"] = time.time() + (hold_min * 60)
+            
+            if strat_name == "groq_gen2":
+                hold_min = int(hold_min_val or 15)
+                # คำนวณหาเวลาเปิดแท่ง M15 ถัดไปที่ตรงรอบนาที 0, 15, 30, 45 ของชั่วโมง
+                import datetime
+                now_ts = time.time()
+                now_dt = datetime.datetime.fromtimestamp(now_ts)
+                minute = now_dt.minute
+                current_m15_minute = (minute // 15) * 15
+                base_dt = now_dt.replace(minute=current_m15_minute, second=0, microsecond=0)
+                next_dt = base_dt + datetime.timedelta(minutes=hold_min)
+                if next_dt.timestamp() <= now_ts:
+                    next_dt += datetime.timedelta(minutes=15)
+                strat_cfg["next_run_time"] = next_dt.timestamp()
+                logging.info(f"⏰ [Sim Mode - Groq Gen2] กำหนดรอบการวิเคราะห์แท่งถัดไปที่เวลาลงตัว: {next_dt.strftime('%H:%M:%S')}")
+            else:
+                strat_cfg["next_run_time"] = time.time() + (hold_min * 60)
 
         if action == "HOLD":
             logging.info(f"พักกลยุทธ์ {strat_name} เป็นเวลา {hold_min} นาที")
@@ -449,7 +476,8 @@ class TradingBotOrchestrator:
                 sl=sl,
                 tp=tp,
                 magic=magic_number,
-                force_market=force_market
+                force_market=force_market,
+                comment=f"{strat_name.upper()} Agent"
             )
             
             if res.get("status") == "SUCCESS":

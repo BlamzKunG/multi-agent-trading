@@ -169,7 +169,7 @@ class TradingBotGUI:
                 "enabled": tk.BooleanVar(value=True),
                 "magic": tk.StringVar(value="444444"),
                 "max_lot": tk.StringVar(value="0.05"),
-                "interval": tk.StringVar(value="15"),
+                "interval": tk.StringVar(value="1"),
                 "trailing_enabled": tk.BooleanVar(value=False),
                 "trailing_atr_tf": tk.StringVar(value="15m"),
                 "trailing_activation_mult": tk.StringVar(value="1.5"),
@@ -964,6 +964,19 @@ class TradingBotGUI:
                         lbl.config(text=str(value))
 
     def setup_equity_tab(self):
+        # สร้างคอนโทรลบาร์ด้านบนสำหรับกรองบอท
+        filter_frame = tk.Frame(self.tab_equity, bg="#0f172a", pady=5)
+        filter_frame.pack(fill="x", padx=10, pady=(5, 0))
+        
+        tk.Label(filter_frame, text="🔍 เลือกกราฟบอทที่ต้องการดู:", font=("Outfit", 9, "bold"), bg="#0f172a", fg="#f8fafc").pack(side="left", padx=5)
+        
+        self.var_equity_filter = tk.StringVar(value="ALL")
+        options = ["ALL", "SCALPING", "DAYTRADING", "SWINGTRADING", "GROQ_GEN2"]
+        
+        cb_filter = ttk.Combobox(filter_frame, textvariable=self.var_equity_filter, values=options, state="readonly", width=15)
+        cb_filter.pack(side="left", padx=5)
+        cb_filter.bind("<<ComboboxSelected>>", lambda e: self.draw_equity_curve())
+        
         # สร้าง Canvas สำหรับวาดกราฟเส้น Equity
         self.equity_canvas = tk.Canvas(self.tab_equity, bg="#020617", highlightthickness=0)
         self.equity_canvas.pack(fill="both", expand=True, padx=10, pady=10)
@@ -980,8 +993,26 @@ class TradingBotGUI:
             return
 
         bal = getattr(self, "current_balance", 10000.0)
-        history = getattr(self, "current_history", [])
+        raw_history = getattr(self, "current_history", [])
         
+        filter_val = self.var_equity_filter.get() if hasattr(self, "var_equity_filter") else "ALL"
+        
+        # คัดกรองประวัติตาม Magic Number ของ Agent
+        history = raw_history
+        if filter_val != "ALL":
+            try:
+                if filter_val == "SCALPING":
+                    magics = [111111, 1001, 1002, 1003, 1004, 1005]
+                    history = [t for t in history if t.get("magic") in magics]
+                elif filter_val == "DAYTRADING":
+                    history = [t for t in history if t.get("magic") == 222222]
+                elif filter_val == "SWINGTRADING":
+                    history = [t for t in history if t.get("magic") == 333333]
+                elif filter_val == "GROQ_GEN2":
+                    history = [t for t in history if t.get("magic") == 444444]
+            except Exception:
+                pass
+                
         # คัดกรองและจัดเรียงประวัติการปิดออเดอร์ตามวันเวลา
         sorted_history = sorted(history, key=lambda x: x.get("close_time", ""))
         pnl_list = [float(t.get("pnl", 0.0)) for t in sorted_history]
@@ -1001,7 +1032,8 @@ class TradingBotGUI:
         self.equity_canvas.create_rectangle(pad_x, pad_y, w - pad_x, h - pad_y, outline="#334155", width=1)
         
         # ข้อความหัวกราฟ
-        self.equity_canvas.create_text(w // 2, 20, text=f"Account Equity Curve (Balance: ${bal:,.2f} | Trades: {len(points)-1})", fill="#f8fafc", font=("Outfit", 11, "bold"))
+        title_text = f"Equity Curve: {filter_val} (Initial: ${starting_balance:,.2f} -> Current: ${bal:,.2f} | Trades: {len(points)-1})"
+        self.equity_canvas.create_text(w // 2, 20, text=title_text, fill="#f8fafc", font=("Outfit", 11, "bold"))
 
         if len(points) < 2:
             self.equity_canvas.create_text(w // 2, h // 2, text="No trade history available yet to draw equity curve.", fill="#64748b", font=("Outfit", 10))

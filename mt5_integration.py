@@ -317,7 +317,7 @@ class MT5Integration:
             })
         return positions_list
 
-    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD", magic=123456, force_market=False):
+    def open_position(self, direction, lot, sl=None, tp=None, entry=None, symbol="XAUUSD", magic=123456, force_market=False, comment=None):
         """
         ส่งคำสั่งซื้อขายล่วงหน้า (Pending Order) หรือ Market Order (หากระบุ force_market=True)
         - direction: 'BUY' หรือ 'SELL'
@@ -385,7 +385,7 @@ class MT5Integration:
                 "tp": final_tp,
                 "deviation": 20,
                 "magic": int(magic),
-                "comment": "LLM Market Trade",
+                "comment": comment or "LLM Market Trade",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC
             }
@@ -472,7 +472,7 @@ class MT5Integration:
             "tp": final_tp,
             "deviation": 20,
             "magic": int(magic),
-            "comment": "LLM Auto Trade",
+            "comment": comment or "LLM Auto Trade",
             "type_time": mt5.ORDER_TIME_GTC,
             "action": mt5.TRADE_ACTION_PENDING
         }
