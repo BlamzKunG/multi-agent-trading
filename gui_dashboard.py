@@ -356,19 +356,50 @@ class TradingBotGUI:
         self.log_text.tag_config('success', foreground="#10b981")
         self.log_text.tag_config('info', foreground="#f8fafc")
         self.log_text.configure(state='disabled')
+        self.bind_all_scrollwheel_events()
         
+    def bind_all_scrollwheel_events(self):
+        # ค้นหาทุก Canvas ที่มีแถบเลื่อนแนวตั้งเพื่อผูกเหตุการณ์ลูกกลิ้งเมาส์อย่างสมบูรณ์แบบ
+        def _on_mousewheel(canvas_target, event):
+            # ตรวจหาเหตุการณ์ของทั้ง Windows (delta) และ Linux (num 4/5)
+            if event.num == 4:
+                canvas_target.yview_scroll(-2, "units")
+            elif event.num == 5:
+                canvas_target.yview_scroll(2, "units")
+            else:
+                # บน Windows เลื่อนขึ้นจะบวก เลื่อนลงจะลบ
+                canvas_target.yview_scroll(int(-1 * (event.delta / 120) * 2), "units")
+
+        def _bind_recursive(widget, canvas_target):
+            # ตรวจสอบประเภท widget เพื่อความปลอดภัยไม่ให้เกิดการขัดแย้งกับ ScrolledText
+            if not isinstance(widget, scrolledtext.ScrolledText) and not isinstance(widget, ttk.Treeview):
+                widget.bind("<MouseWheel>", lambda e, c=canvas_target: _on_mousewheel(c, e))
+                widget.bind("<Button-4>", lambda e, c=canvas_target: _on_mousewheel(c, e))
+                widget.bind("<Button-5>", lambda e, c=canvas_target: _on_mousewheel(c, e))
+            for child in widget.winfo_children():
+                _bind_recursive(child, canvas_target)
+
+        # ค้นหาและผูกเหตุการณ์ใน Left Panel
+        for tab in [self.tab_global, self.tab_scalp, self.tab_day, self.tab_swing, self.tab_groq, self.tab_custom]:
+            # ในแต่ละแท็บจะมี Canvas อยู่เป็นตัวลูกตัวแรก
+            for child in tab.winfo_children():
+                if isinstance(child, tk.Canvas):
+                    # ผูกเหตุการณ์ลูกกลิ้งเมาส์กับ Canvas นี้และลูกทั้งหมดของมัน
+                    _bind_recursive(child, child)
+
     def create_scrollable_container(self, parent_frame):
         # สร้าง Canvas และ Scrollbar เพื่อรองรับการสกรอลล์แนวดิ่ง
         canvas = tk.Canvas(parent_frame, bg="#1e293b", highlightthickness=0)
         scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg="#1e293b")
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
-        )
+        def _update_scrollregion(event=None):
+            canvas.update_idletasks()
+            bbox = canvas.bbox("all")
+            if bbox:
+                canvas.configure(scrollregion=bbox)
+                
+        scrollable_frame.bind("<Configure>", _update_scrollregion)
         
         window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -376,30 +407,8 @@ class TradingBotGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # ปรับความกว้างของ scrollable_frame ให้เต็มขนาด canvas เสมอเพื่อความสมมาตร
-        canvas.bind('<Configure>', lambda event: canvas.itemconfig(window_id, width=event.width))
-        
-        # ผูกระบบเลื่อนลูกกลิ้งเมาส์ (Mousewheel) ให้รองรับระบบ Linux (X11) และ Windows/macOS
-        def _on_mousewheel(event):
-            if event.num == 4:
-                canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                canvas.yview_scroll(1, "units")
-            else:
-                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-                
-        def _bind_mouse(event):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            canvas.bind_all("<Button-4>", _on_mousewheel)
-            canvas.bind_all("<Button-5>", _on_mousewheel)
-            
-        def _unbind_mouse(event):
-            canvas.unbind_all("<MouseWheel>")
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
-            
-        canvas.bind("<Enter>", _bind_mouse)
-        canvas.bind("<Leave>", _unbind_mouse)
+        # ปรับความกว้างของ scrollable_frame ให้เต็มขนาด canvas เสมอเพื่อความสมมาตร และคำนวณพื้นที่สกรอลล์ใหม่
+        canvas.bind('<Configure>', lambda event: (canvas.itemconfig(window_id, width=event.width), _update_scrollregion()))
         
         return scrollable_frame
 
