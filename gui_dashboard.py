@@ -121,7 +121,8 @@ class TradingBotGUI:
             "scalping": 0,
             "daytrading": 0,
             "swingtrading": 0,
-            "groq_gen2": 0
+            "groq_gen2": 0,
+            "custom_agent": 0
         }
         
         # กำหนดตัวแปรกราฟิก
@@ -175,6 +176,28 @@ class TradingBotGUI:
                 "trailing_activation_mult": tk.StringVar(value="1.5"),
                 "trailing_distance_mult": tk.StringVar(value="1.5"),
                 "trailing_step_mult": tk.StringVar(value="0.3")
+            },
+            "custom_agent": {
+                "enabled": tk.BooleanVar(value=True),
+                "magic": tk.StringVar(value="555555"),
+                "max_lot": tk.StringVar(value="0.05"),
+                "lot_size": tk.StringVar(value="0.01"),
+                "interval": tk.StringVar(value="5"),
+                "trailing_enabled": tk.BooleanVar(value=True),
+                "trailing_atr_tf": tk.StringVar(value="5m"),
+                "trailing_activation_mult": tk.StringVar(value="1.5"),
+                "trailing_distance_mult": tk.StringVar(value="1.0"),
+                "trailing_step_mult": tk.StringVar(value="0.3"),
+                "breakeven_enabled": tk.BooleanVar(value=True),
+                "breakeven_atr_mult": tk.StringVar(value="1.0"),
+                "quick_close_profit": tk.StringVar(value="9.0"),
+                "daily_profit_target": tk.StringVar(value="100.0"),
+                "daily_loss_limit": tk.StringVar(value="30.0"),
+                "reverse_mode": tk.BooleanVar(value=False),
+                "nohold_mode": tk.BooleanVar(value=True),
+                "risk_mode": tk.StringVar(value="ATR"),
+                "fixed_sl_points": tk.StringVar(value="500"),
+                "fixed_tp_points": tk.StringVar(value="1000")
             }
         }
         
@@ -232,6 +255,11 @@ class TradingBotGUI:
         self.config_tabs.add(self.tab_groq, text=" 🤖 Groq Gen2 ")
         self.setup_strategy_tab(self.tab_groq, "groq_gen2")
         
+        # 6. แท็บ Custom Agent (AI Flex)
+        self.tab_custom = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
+        self.config_tabs.add(self.tab_custom, text=" 🧠 Custom Agent ")
+        self.setup_custom_agent_tab(self.tab_custom)
+        
         # สวิตช์และปุ่มควบคุมระบบออโต้/แมนนวล ด้านล่างของ Left Panel
         control_frame = tk.LabelFrame(self.left_panel, text="🚦 Control Room", bg="#1e293b", fg="#fbbf24", font=self.font_label, padx=10, pady=5)
         control_frame.pack(fill="x", pady=5)
@@ -257,6 +285,9 @@ class TradingBotGUI:
         
         btn_groq = tk.Button(manual_btn_frame, text="Run GroqGen2", font=("Outfit", 8, "bold"), bg="#a855f7", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("groq_gen2"))
         btn_groq.pack(side="left", expand=True, fill="x", padx=1)
+        
+        btn_custom = tk.Button(manual_btn_frame, text="Run Custom", font=("Outfit", 8, "bold"), bg="#ec4899", fg="white", relief="flat", command=lambda: self.trigger_manual_strategy("custom_agent"))
+        btn_custom.pack(side="left", expand=True, fill="x", padx=1)
         
         self.lbl_sched_status = tk.Label(control_frame, text="สถานะ: หยุดการทำงานออโต้", font=self.font_label, bg="#1e293b", fg="#ef4444")
         self.lbl_sched_status.pack(pady=3)
@@ -372,6 +403,94 @@ class TradingBotGUI:
             "claude-sonnet-4-5"
         ], state="readonly")
         self.cb_management_model.pack(fill="x", pady=(0, 10))
+
+    def setup_custom_agent_tab(self, parent_frame):
+        # สร้าง Canvas และ Scrollbar เพื่อรองรับการสกรอลล์แนวดิ่งเนื่องจากตัวแปรมีปริมาณมาก
+        canvas = tk.Canvas(parent_frame, bg="#1e293b", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg="#1e293b")
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        vars_dict = self.strat_vars["custom_agent"]
+        
+        # 1. General Config Group
+        f_gen = tk.LabelFrame(scrollable_frame, text="⚙️ General Configuration", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
+        f_gen.pack(fill="x", pady=5, padx=5)
+        
+        chk_enable = tk.Checkbutton(f_gen, text="เปิดใช้งาน Custom Agent", variable=vars_dict["enabled"], font=("Outfit", 9, "bold"), bg="#1e293b", fg="#10b981", selectcolor="#0f172a")
+        chk_enable.pack(anchor="w", pady=3)
+        
+        def add_row(parent, label_text, var):
+            row = tk.Frame(parent, bg="#1e293b")
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label_text, font=self.font_label, bg="#1e293b", fg="#94a3b8", width=18, anchor="w").pack(side="left")
+            tk.Entry(row, textvariable=var, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2).pack(side="right", fill="x", expand=True)
+            
+        add_row(f_gen, "Magic Number", vars_dict["magic"])
+        add_row(f_gen, "Lot Size คงที่", vars_dict["lot_size"])
+        add_row(f_gen, "Run Interval (นาที)", vars_dict["interval"])
+        
+        # 2. Risk Management Group
+        f_risk = tk.LabelFrame(scrollable_frame, text="🛡️ Risk & Target Setup", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
+        f_risk.pack(fill="x", pady=5, padx=5)
+        
+        row_rm = tk.Frame(f_risk, bg="#1e293b")
+        row_rm.pack(fill="x", pady=2)
+        tk.Label(row_rm, text="Risk Mode (SL/TP)", font=self.font_label, bg="#1e293b", fg="#94a3b8", width=18, anchor="w").pack(side="left")
+        cb_rm = ttk.Combobox(row_rm, textvariable=vars_dict["risk_mode"], values=["ATR", "Fixed"], state="readonly")
+        cb_rm.pack(side="right", fill="x", expand=True)
+        
+        add_row(f_risk, "Fixed SL (Points)", vars_dict["fixed_sl_points"])
+        add_row(f_risk, "Fixed TP (Points)", vars_dict["fixed_tp_points"])
+        
+        # 3. Targets Quotas
+        f_target = tk.LabelFrame(scrollable_frame, text="💰 Daily Quota Targets", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
+        f_target.pack(fill="x", pady=5, padx=5)
+        add_row(f_target, "Daily Profit Target ($)", vars_dict["daily_profit_target"])
+        add_row(f_target, "Daily Loss Limit ($)", vars_dict["daily_loss_limit"])
+        
+        # 4. Trailing & Breakeven Auto controls
+        f_auto = tk.LabelFrame(scrollable_frame, text="🚦 Autopilot Controls", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
+        f_auto.pack(fill="x", pady=5, padx=5)
+        
+        chk_be = tk.Checkbutton(f_auto, text="เปิดใช้ Breakeven (กันทุน)", variable=vars_dict["breakeven_enabled"], font=self.font_label, bg="#1e293b", fg="#3b82f6", selectcolor="#0f172a")
+        chk_be.pack(anchor="w", pady=2)
+        add_row(f_auto, "Breakeven ATR Mult", vars_dict["breakeven_atr_mult"])
+        add_row(f_auto, "Quick Close Profit ($)", vars_dict["quick_close_profit"])
+        
+        chk_tr = tk.Checkbutton(f_auto, text="เปิดใช้ ATR Trailing Stop", variable=vars_dict["trailing_enabled"], font=self.font_label, bg="#1e293b", fg="#fbbf24", selectcolor="#0f172a")
+        chk_tr.pack(anchor="w", pady=2)
+        
+        row_tf = tk.Frame(f_auto, bg="#1e293b")
+        row_tf.pack(fill="x", pady=2)
+        tk.Label(row_tf, text="Trailing ATR TF", font=self.font_label, bg="#1e293b", fg="#94a3b8", width=18, anchor="w").pack(side="left")
+        cb_tf = ttk.Combobox(row_tf, textvariable=vars_dict["trailing_atr_tf"], values=["1m", "5m", "15m", "1h"], state="readonly")
+        cb_tf.pack(side="right", fill="x", expand=True)
+        
+        add_row(f_auto, "Activation Mult", vars_dict["trailing_activation_mult"])
+        add_row(f_auto, "Distance Mult", vars_dict["trailing_distance_mult"])
+        add_row(f_auto, "Step Mult", vars_dict["trailing_step_mult"])
+        
+        # 5. AI Settings
+        f_ai = tk.LabelFrame(scrollable_frame, text="🤖 AI Model Flags", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
+        f_ai.pack(fill="x", pady=5, padx=5)
+        
+        chk_nh = tk.Checkbutton(f_ai, text="เปิด NoHoldMode (ห้าม AI ตอบ HOLD)", variable=vars_dict["nohold_mode"], font=self.font_label, bg="#1e293b", fg="#a855f7", selectcolor="#0f172a")
+        chk_nh.pack(anchor="w", pady=2)
+        chk_rv = tk.Checkbutton(f_ai, text="เปิด Reverse Mode (สลับฝั่งสัญญาณ)", variable=vars_dict["reverse_mode"], font=self.font_label, bg="#1e293b", fg="#ec4899", selectcolor="#0f172a")
+        chk_rv.pack(anchor="w", pady=2)
 
     def setup_strategy_tab(self, parent_frame, strat_name):
         vars_dict = self.strat_vars[strat_name]
@@ -555,19 +674,17 @@ class TradingBotGUI:
                 self.var_analysis_model.set(cfg.get("analysis_model", "gpt-5.5 (Native: $3.00/1M)"))
                 self.var_management_model.set(cfg.get("management_model", "gpt-5.4-mini (Native: $2.25/1M)"))
                 
-                # โหลดค่าแต่ละกลยุทธ์
+                # โหลดค่าแต่ละกลยุทธ์แบบไดนามิก (รองรับทุกตัวแปร)
                 for name, s_dict in self.strat_vars.items():
                     s_cfg = cfg.get(name, {})
                     if s_cfg:
-                        s_dict["enabled"].set(s_cfg.get("enabled", True))
-                        s_dict["magic"].set(str(s_cfg.get("magic", s_dict["magic"].get())))
-                        s_dict["max_lot"].set(str(s_cfg.get("max_lot", s_dict["max_lot"].get())))
-                        s_dict["interval"].set(str(s_cfg.get("interval", s_dict["interval"].get())))
-                        s_dict["trailing_enabled"].set(s_cfg.get("trailing_enabled", s_dict["trailing_enabled"].get()))
-                        s_dict["trailing_atr_tf"].set(s_cfg.get("trailing_atr_tf", s_dict["trailing_atr_tf"].get()))
-                        s_dict["trailing_activation_mult"].set(str(s_cfg.get("trailing_activation_mult", s_dict["trailing_activation_mult"].get())))
-                        s_dict["trailing_distance_mult"].set(str(s_cfg.get("trailing_distance_mult", s_dict["trailing_distance_mult"].get())))
-                        s_dict["trailing_step_mult"].set(str(s_cfg.get("trailing_step_mult", s_dict["trailing_step_mult"].get())))
+                        for key, var in s_dict.items():
+                            if key in s_cfg:
+                                val = s_cfg[key]
+                                if isinstance(var, tk.BooleanVar):
+                                    var.set(bool(val))
+                                elif isinstance(var, tk.StringVar):
+                                    var.set(str(val))
                         
                 self.apply_config_to_bots(cfg)
             except Exception as e:
@@ -589,19 +706,24 @@ class TradingBotGUI:
                 "mt5_server": self.ent_mt5_server.get()
             }
             
-            # เก็บค่ารายกลยุทธ์
+            # เก็บค่ารายกลยุทธ์แบบไดนามิก (รองรับทุกตัวแปรอัตโนมัติ)
             for name, s_dict in self.strat_vars.items():
-                cfg[name] = {
-                    "enabled": s_dict["enabled"].get(),
-                    "magic": int(s_dict["magic"].get() or 0),
-                    "max_lot": float(s_dict["max_lot"].get() or 0.01),
-                    "interval": int(s_dict["interval"].get() or 5),
-                    "trailing_enabled": s_dict["trailing_enabled"].get(),
-                    "trailing_atr_tf": s_dict["trailing_atr_tf"].get(),
-                    "trailing_activation_mult": float(s_dict["trailing_activation_mult"].get() or 1.5),
-                    "trailing_distance_mult": float(s_dict["trailing_distance_mult"].get() or 1.5),
-                    "trailing_step_mult": float(s_dict["trailing_step_mult"].get() or 0.3)
-                }
+                cfg[name] = {}
+                for key, var in s_dict.items():
+                    val = var.get()
+                    if isinstance(var, tk.BooleanVar):
+                        cfg[name][key] = bool(val)
+                    else:
+                        val_str = str(val)
+                        if val_str.lower() in ["true", "false"]:
+                            cfg[name][key] = (val_str.lower() == "true")
+                        elif val_str.isdigit():
+                            cfg[name][key] = int(val_str)
+                        else:
+                            try:
+                                cfg[name][key] = float(val_str)
+                            except ValueError:
+                                cfg[name][key] = val_str
                 
             with open("gui_config.json", "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
@@ -639,7 +761,7 @@ class TradingBotGUI:
             bot_mt5.mt5_bridge.server = srv
             
         # สมัครโครงสร้างกลยุทธ์ทั้งหมดเข้าสู่บอทประมวลผล
-        for name in ["scalping", "daytrading", "swingtrading", "groq_gen2"]:
+        for name in ["scalping", "daytrading", "swingtrading", "groq_gen2", "custom_agent"]:
             s_cfg = cfg.get(name, {})
             if s_cfg:
                 for bot in [bot_sim, bot_mt5]:
@@ -667,8 +789,9 @@ class TradingBotGUI:
             t_dt = self.strat_vars["daytrading"]["interval"].get()
             t_sw = self.strat_vars["swingtrading"]["interval"].get()
             t_gq = self.strat_vars["groq_gen2"]["interval"].get()
+            t_ct = self.strat_vars["custom_agent"]["interval"].get()
             self.lbl_sched_status.config(
-                text=f"สถานะ: Auto-Pilot ทำงาน (Scalp:{t_sc}m | Day:{t_dt}m | Swing:{t_sw}m | Groq:{t_gq}m)", 
+                text=f"สถานะ: Auto-Pilot ทำงาน (Scalp:{t_sc}m | Day:{t_dt}m | Swing:{t_sw}m | Groq:{t_gq}m | Custom:{t_ct}m)", 
                 fg="#10b981"
             )
         else:
@@ -733,17 +856,22 @@ class TradingBotGUI:
                 "mt5_server": self.ent_mt5_server.get()
             }
             for name, s_dict in self.strat_vars.items():
-                cfg[name] = {
-                    "enabled": s_dict["enabled"].get(),
-                    "magic": int(s_dict["magic"].get() or 0),
-                    "max_lot": float(s_dict["max_lot"].get() or 0.01),
-                    "interval": int(s_dict["interval"].get() or 5),
-                    "trailing_enabled": s_dict["trailing_enabled"].get(),
-                    "trailing_atr_tf": s_dict["trailing_atr_tf"].get(),
-                    "trailing_activation_mult": float(s_dict["trailing_activation_mult"].get() or 1.5),
-                    "trailing_distance_mult": float(s_dict["trailing_distance_mult"].get() or 1.5),
-                    "trailing_step_mult": float(s_dict["trailing_step_mult"].get() or 0.3)
-                }
+                cfg[name] = {}
+                for key, var in s_dict.items():
+                    val = var.get()
+                    if isinstance(var, tk.BooleanVar):
+                        cfg[name][key] = bool(val)
+                    else:
+                        val_str = str(val)
+                        if val_str.lower() in ["true", "false"]:
+                            cfg[name][key] = (val_str.lower() == "true")
+                        elif val_str.isdigit():
+                            cfg[name][key] = int(val_str)
+                        else:
+                            try:
+                                cfg[name][key] = float(val_str)
+                            except ValueError:
+                                cfg[name][key] = val_str
             with open("gui_config.json", "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
             self.apply_config_to_bots(cfg)
@@ -787,7 +915,7 @@ class TradingBotGUI:
                     history = status.get("history", [])
                     
                     # คำนวณ Performance สถิติรายตัว
-                    for name in ["scalping", "daytrading", "swingtrading", "groq_gen2"]:
+                    for name in ["scalping", "daytrading", "swingtrading", "groq_gen2", "custom_agent"]:
                         try:
                             mag = int(self.strat_vars[name]["magic"].get())
                             if name == "scalping":
@@ -830,7 +958,7 @@ class TradingBotGUI:
                         symbol = bot_mt5.symbol
                         
                         # คำนวณ Performance
-                        for name in ["scalping", "daytrading", "swingtrading", "groq_gen2"]:
+                        for name in ["scalping", "daytrading", "swingtrading", "groq_gen2", "custom_agent"]:
                             try:
                                 mag = int(self.strat_vars[name]["magic"].get())
                                 if name == "scalping":

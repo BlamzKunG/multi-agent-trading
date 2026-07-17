@@ -64,6 +64,29 @@ class TradingBotOrchestrator:
                 "trailing_distance_mult": 1.5,
                 "trailing_step_mult": 0.3,
                 "next_run_time": 0
+            },
+            "custom_agent": {
+                "magic": 555555,
+                "enabled": True,
+                "max_lot": 0.05,
+                "lot_size": 0.01,
+                "interval": 5,
+                "trailing_enabled": True,
+                "trailing_atr_tf": "5m",
+                "trailing_activation_mult": 1.5,
+                "trailing_distance_mult": 1.0,
+                "trailing_step_mult": 0.3,
+                "breakeven_enabled": True,
+                "breakeven_atr_mult": 1.0,
+                "quick_close_profit": 9.0,
+                "daily_profit_target": 100.0,
+                "daily_loss_limit": 30.0,
+                "reverse_mode": False,
+                "nohold_mode": True,
+                "risk_mode": "ATR",
+                "fixed_sl_points": 500,
+                "fixed_tp_points": 1000,
+                "next_run_time": 0
             }
         }
         # ตั้งค่าเริ่มต้นของ groq_gen2 ให้รอเริ่มรันที่รอบ M15 ถัดไปที่ตรง 15 นาทีของชั่วโมง
@@ -244,6 +267,45 @@ class TradingBotOrchestrator:
                 logging.info(f"⏳ [Hold Active] กลยุทธ์ {strategy_name}: อยู่ในช่วงพักวิเคราะห์ เหลือเวลา {int(remaining_sec/60)} นาที {int(remaining_sec%60)} วินาที...")
                 return
                 
+            # ดำเนินการเช็คยอดเป้าหมายรายวัน (Daily Quota check) เฉพาะ Custom Agent ในระบบจำลอง
+            if strategy_name == "custom_agent":
+                closed_trades = self.exchange.get_trade_history(self.symbol, magic=magic_number)
+                import datetime
+                today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+                closed_today = [t for t in closed_trades if t.get("close_time", "").startswith(today_str)]
+                closed_pnl = sum(float(t.get("pnl", 0.0)) for t in closed_today)
+                
+                open_positions = self.exchange.get_open_positions(self.symbol, magic=magic_number)
+                floating_pnl = sum(float(pos.get("pnl", 0.0)) for pos in open_positions)
+                
+                daily_pnl = closed_pnl + floating_pnl
+                daily_profit_target = float(strat.get("daily_profit_target", 100.0))
+                daily_loss_limit = float(strat.get("daily_loss_limit", 30.0))
+                
+                if daily_pnl >= daily_profit_target:
+                    logging.info(f"🟢 [Sim Mode - Custom Agent] บรรลุเป้าหมายกำไรรายวัน (${daily_pnl:.2f} >= ${daily_profit_target:.2f}) -> ปิดทุกออเดอร์และหยุดพักถึงเที่ยงคืน")
+                    for pos in open_positions:
+                        self.exchange.close_position(pos["id"], reason="Daily Profit Limit Hit")
+                    pending_orders = self.exchange.get_pending_orders(self.symbol, magic=magic_number)
+                    for p in pending_orders:
+                        self.exchange.cancel_pending_order(p["id"])
+                    
+                    tomorrow = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=1)
+                    strat["next_run_time"] = tomorrow.timestamp()
+                    return
+                    
+                if daily_pnl <= -daily_loss_limit:
+                    logging.info(f"🔴 [Sim Mode - Custom Agent] ชนเพดานขาดทุนรายวัน (${daily_pnl:.2f} <= -${daily_loss_limit:.2f}) -> ปิดทุกออเดอร์และหยุดพักถึงเที่ยงคืน")
+                    for pos in open_positions:
+                        self.exchange.close_position(pos["id"], reason="Daily Loss Limit Hit")
+                    pending_orders = self.exchange.get_pending_orders(self.symbol, magic=magic_number)
+                    for p in pending_orders:
+                        self.exchange.cancel_pending_order(p["id"])
+                    
+                    tomorrow = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=1)
+                    strat["next_run_time"] = tomorrow.timestamp()
+                    return
+
             pending_orders = self.exchange.get_pending_orders(self.symbol, magic=magic_number)
             closed_trades = [t for t in status.get("history", []) if t.get("magic") == magic_number]
             perf_stats = PerformanceTracker.calculate_metrics(closed_trades)
@@ -285,12 +347,131 @@ class TradingBotOrchestrator:
                     performance_stats=perf_stats, trade_history=closed_trades,
                     pending_orders=pending_orders
                 )
+            elif strategy_name == "custom_agent":
+                df_5m = self.data_feed.get_historical_data(interval="5m", period="2d")
+                df_5m_pa = self.agents._analyze_price_action(df_5m)
+                atr_5m = float(df_5m_pa['atr_14'].iloc[-1]) if not df_5m_pa.empty else 0.0
+                
+                nohold_mode = strat.get("nohold_mode", True)
+                
+                decision = self.agents.analyze_custom_agent(
+                    df_5m=df_5m,
+                    balance=balance, symbol=self.symbol,
+                    leverage=self.exchange.leverage, spread=0.0,
+                    performance_stats=perf_stats, trade_history=closed_trades,
+                    pending_orders=pending_orders,
+                    nohold_mode=nohold_mode
+                )
+                
+                if decision:
+                    action = decision.get("action")
+                    confidence = int(decision.get("confidence", 0))
+                    
+                    # กลับฝั่งสัญญาณ (Reverse Mode)
+                    reverse_mode = strat.get("reverse_mode", False)
+                    if reverse_mode and action in ["BUY", "SELL"]:
+                        old_action = action
+                        action = "SELL" if action == "BUY" else "BUY"
+                        decision["action"] = action
+                        logging.info(f"🔄 [Sim Mode - Custom Agent] เปิดใช้งาน Reverse Mode: สลับคำสั่งจาก {old_action} เป็น {action}")
+                        
+                    if action in ["BUY", "SELL"]:
+                        if confidence < 70:
+                            logging.info(f"🟡 [Sim Mode - Custom Agent] สัญญาณความมั่นใจ ({confidence}%) ต่ำกว่าเกณฑ์ขั้นต่ำ 70%. บังคับข้ามรอบ (เปลี่ยนเป็น HOLD)")
+                            decision["action"] = "HOLD"
+                            decision["hold_minutes"] = 5
+                        else:
+                            risk_mode = strat.get("risk_mode", "ATR")
+                            lot_size = float(strat.get("lot_size", 0.01))
+                            decision["lot"] = lot_size
+                            
+                            # ดึงราคาตลาดจำลอง
+                            entry_type = decision.get("entry_type", "MARKET")
+                            entry_price_val = float(decision.get("entry") or self.exchange.current_price)
+                            ref_price = self.exchange.current_price if entry_type == "MARKET" else entry_price_val
+                            decision["entry"] = ref_price
+                            decision["entry_type"] = entry_type
+                            
+                            # คำนวณ SL / TP ในระบบจำลอง
+                            if risk_mode == "ATR":
+                                if action == "BUY":
+                                    decision["sl"] = round(ref_price - (atr_5m * 2.0), 2)
+                                    decision["tp"] = round(ref_price + (atr_5m * 3.0), 2)
+                                else:
+                                    decision["sl"] = round(ref_price + (atr_5m * 2.0), 2)
+                                    decision["tp"] = round(ref_price - (atr_5m * 3.0), 2)
+                            else: # Fixed Mode
+                                point = 0.01 # สำหรับ XAUUSD
+                                fixed_sl = float(strat.get("fixed_sl_points", 500)) * point
+                                fixed_tp = float(strat.get("fixed_tp_points", 1000)) * point
+                                if action == "BUY":
+                                    decision["sl"] = round(ref_price - fixed_sl, 2)
+                                    decision["tp"] = round(ref_price + fixed_tp, 2)
+                                else:
+                                    decision["sl"] = round(ref_price + fixed_sl, 2)
+                                    decision["tp"] = round(ref_price - fixed_tp, 2)
+                            
+                            # จัดการจับชนและสลับออเดอร์ในระบบจำลอง (Part 4)
+                            open_pos_custom = self.exchange.get_open_positions(self.symbol, magic=magic_number)
+                            if open_pos_custom:
+                                existing_pos = open_pos_custom[0]
+                                existing_dir = existing_pos["direction"]
+                                if existing_dir == action:
+                                    logging.info(f"⚖️ [Sim Mode - Custom Agent] ทิศทางใหม่ตรงกับออเดอร์ค้าง -> ถือออเดอร์เดิมต่อ")
+                                    decision["action"] = "HOLD"
+                                else:
+                                    logging.info(f"⚖️ [Sim Mode - Custom Agent] ทิศทางใหม่สวนทาง -> ปิดออเดอร์เก่า Ticket #{existing_pos['id']} ทันที")
+                                    self.exchange.close_position(existing_pos["id"], reason="Custom Agent Flip Close")
+                            
+                    elif action == "HOLD":
+                        open_pos_custom = self.exchange.get_open_positions(self.symbol, magic=magic_number)
+                        if open_pos_custom:
+                            for pos in open_pos_custom:
+                                logging.info(f"⚖️ [Sim Mode - Custom Agent] สัญญาณ AI สั่ง HOLD -> ปิดออเดอร์ค้าง Ticket #{pos['id']}")
+                                self.exchange.close_position(pos["id"], reason="Custom Agent HOLD Close")
                 
             if decision:
                 self.execute_decision(strategy_name, decision, magic_number, pending_orders, strat)
 
     def manage_trailing_stop(self, strategy_name, open_positions, strat):
-        """จัดการการเลื่อน trailing stop ตามข้อมูล ATR สำหรับพอร์ตจำลอง"""
+        """จัดการการเลื่อน trailing stop, breakeven และเป้ารวบล็อกกำไร ในระบบจำลอง"""
+        # 1. เช็คเป้ารวบล็อกกำไร (Quick Profit Close)
+        quick_close = float(strat.get("quick_close_profit", 0.0) or 0.0)
+        if quick_close > 0.0:
+            total_float_pnl = sum(float(pos.get("pnl", 0.0)) for pos in open_positions)
+            if total_float_pnl >= quick_close:
+                logging.info(f"💰 [Sim Mode - {strategy_name.upper()}] กำไรรวมลอยตัว (${total_float_pnl:.2f}) ถึงเป้า Quick Close (${quick_close:.2f}) -> สั่งปิดทุกไม้!")
+                for pos in open_positions:
+                    self.exchange.close_position(pos["id"], reason=f"{strategy_name.upper()} Quick Profit Close")
+                return
+
+        # 2. จัดการ Breakeven (กันทุน)
+        if strat.get("breakeven_enabled", False):
+            tf = strat.get("trailing_atr_tf", "5m")
+            df_hist = self.data_feed.get_historical_data(interval=tf, period="1d")
+            if not df_hist.empty:
+                df_pa = self.agents._analyze_price_action(df_hist)
+                atr = float(df_pa['atr_14'].iloc[-1])
+                be_mult = float(strat.get("breakeven_atr_mult", 1.0))
+                be_dist = atr * be_mult
+                
+                for pos in open_positions:
+                    pos_id = pos["id"]
+                    direction = pos["direction"]
+                    entry = pos["entry_price"]
+                    current_sl = pos.get("sl")
+                    curr_price = self.exchange.current_price
+                    
+                    if direction == "BUY":
+                        if (curr_price - entry >= be_dist) and (current_sl is None or current_sl < entry):
+                            self.exchange.modify_position(pos_id, new_sl=entry, new_tp=pos.get("tp"))
+                            logging.info(f"🛡️ [Sim Mode - {strategy_name.upper()}] ขยับราคา SL มาจุดบังทุน (Breakeven) สำเร็จที่ราคา {entry:.2f}")
+                    else: # SELL
+                        if (entry - curr_price >= be_dist) and (current_sl is None or current_sl > entry):
+                            self.exchange.modify_position(pos_id, new_sl=entry, new_tp=pos.get("tp"))
+                            logging.info(f"🛡️ [Sim Mode - {strategy_name.upper()}] ขยับราคา SL มาจุดบังทุน (Breakeven) สำเร็จที่ราคา {entry:.2f}")
+
+        # 3. จัดการ Trailing Stop
         if strat.get("trailing_enabled", True):
             logging.info(f"⚡ [Sim Mode] กลยุทธ์ {strategy_name}: พบออเดอร์ค้าง {len(open_positions)} ไม้ -> รัน ATR Trailing Stop")
             tf = strat.get("trailing_atr_tf", "5m")

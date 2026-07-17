@@ -1083,3 +1083,53 @@ EMA 50 = {current_ema50:.2f}, EMA 200 = {current_ema200:.2f}
         ], json_response=True, category="analysis")
         
         return proposal
+
+    def analyze_custom_agent(self, df_5m, balance, symbol="XAUUSD", leverage=100.0, spread=0.0, performance_stats=None, trade_history=None, pending_orders=None, nohold_mode=True):
+        """
+        5) Custom Agent (AI Flex): Truly independent agent running on M5 timeframe.
+        """
+        model = self.analysis_model
+        
+        df_5m_pa = self._analyze_price_action(df_5m)
+        current_price = float(df_5m_pa['close'].iloc[-1])
+        atr_5m = float(df_5m_pa['atr_14'].iloc[-1])
+        
+        cio_system = f"""คุณคือ AI Custom Agent (AI Flex) ระบบวิเคราะห์พฤติกรรมราคาเชิงสวิงระดับย่อยสั้นของทองคำ ({symbol}) บนไทม์เฟรม M5
+หน้าที่ของคุณคือการวิเคราะห์โครงสร้างตลาดประวัติแท่งเทียนล่าสุด เพื่อระบุว่าทิศทางฝั่งใดที่มีความได้เปรียบทางสถิติสูงสุด
+คุณมีสิทธิ์ตัดสินใจวิเคราะห์เป็นอิสระ 100% ไม่มีข้อผูกมัดหรือการเชื่อมโยงกับอินดิเคเตอร์ตัวอื่นใดๆ ทั้งสิ้น
+
+คุณต้องตอบกลับข้อมูลแผนตัดสินใจในรูปแบบ JSON โครงสร้างนี้เท่านั้น:
+{{
+  "action": "BUY" | "SELL" | "HOLD", // เสนอฝั่งการเทรดหลัก
+  "confidence": int, // น้ำหนักความมั่นใจของคุณเป็นตัวเลขเปอร์เซ็นต์ (0 ถึง 100)
+  "reasoning": "สรุปแผนประเมินวิเคราะห์ตลาดสั้นๆ แบบอิงรูปแบบแท่งเทียนระดับย่อย"
+}}
+
+กติกาสำคัญ:
+1. หากระบบเปิดใช้งาน NoHoldMode (ข้อมูลด้านล่างเป็น True) คุณจะถูกจำกัดไม่ให้เลือกตอบสถานะ "HOLD" โดยเด็ดขาด ต้องตัดสินใจเลือกเป็น "BUY" หรือ "SELL" เท่านั้น
+2. หาก NoHoldMode เป็น False คุณสามารถเลือกตอบสถานะ "HOLD" เพื่อพักรอบเทรดได้ตามสมควรกรณีตลาดไซด์เวย์ไม่มีเทรนด์ชัดเจน"""
+
+        # บังคับการส่งค่าตัวเลือก NoHoldMode ลง Prompt
+        nohold_str = "เปิดใช้งาน (True - ห้ามตอบ HOLD เด็ดขาด ต้อง BUY/SELL เท่านั้น)" if nohold_mode else "ปิดใช้งาน (False - สามารถตอบ HOLD ได้)"
+        
+        pending_str = json.dumps(pending_orders, indent=2) if pending_orders else "ไม่มีออเดอร์เปิดอยู่"
+        reflection_context = self._format_reflection(performance_stats, trade_history)
+        
+        cio_user = f"""สถิติบัญชี: บาลานซ์ ${balance:.2f} USD | ราคา {symbol} ปัจจุบัน: {current_price:.2f} | ค่า ATR(14, M5): {atr_5m:.2f} | ค่า Spread: {spread:.2f}
+สถานะ NoHoldMode: {nohold_str}
+ประวัติออเดอร์ที่ค้างอยู่:
+{pending_str}
+
+ประวัติแท่งเทียน M5 ย้อนหลัง 20 แท่ง:
+{self._format_candles_brief(df_5m_pa, 20)}
+{reflection_context}
+
+จงตอบสรุปผลวิเคราะห์ของ Custom Agent ในรูปแบบ JSON:"""
+
+        logging.info("Custom Agent: เริ่มเรียกใช้โมเดลวิเคราะห์ทิศทาง M5...")
+        proposal = self._call_llm(model, [
+            {"role": "system", "content": cio_system},
+            {"role": "user", "content": cio_user}
+        ], json_response=True, category="analysis")
+        
+        return proposal
