@@ -196,7 +196,7 @@ class TradingBotGUI:
                 "daily_quota_enabled": tk.BooleanVar(value=True),
                 "quick_close_enabled": tk.BooleanVar(value=True),
                 "reverse_mode": tk.BooleanVar(value=False),
-                "nohold_mode": tk.BooleanVar(value=True),
+                "hold_mode_enabled": tk.BooleanVar(value=False),
                 "risk_mode": tk.StringVar(value="ATR"),
                 "fixed_sl_points": tk.StringVar(value="500"),
                 "fixed_tp_points": tk.StringVar(value="1000")
@@ -504,7 +504,7 @@ class TradingBotGUI:
         f_ai = tk.LabelFrame(scrollable_frame, text="🤖 AI Model Flags", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
         f_ai.pack(fill="x", pady=5, padx=5)
         
-        chk_nh = tk.Checkbutton(f_ai, text="เปิด/ปิด NoHoldMode (เปิด = บังคับยิง BUY/SELL เท่านั้น | ปิด = ยอมให้มี HOLD)", variable=vars_dict["nohold_mode"], font=self.font_label, bg="#1e293b", fg="#a855f7", selectcolor="#0f172a")
+        chk_nh = tk.Checkbutton(f_ai, text="เปิดใช้งาน Hold Mode (เปิด = ยอมให้ AI ตอบ HOLD | ปิด = บังคับยิง BUY/SELL เท่านั้น)", variable=vars_dict["hold_mode_enabled"], font=self.font_label, bg="#1e293b", fg="#a855f7", selectcolor="#0f172a")
         chk_nh.pack(anchor="w", pady=2)
         chk_rv = tk.Checkbutton(f_ai, text="เปิด Reverse Mode (สลับฝั่งสัญญาณ)", variable=vars_dict["reverse_mode"], font=self.font_label, bg="#1e293b", fg="#ec4899", selectcolor="#0f172a")
         chk_rv.pack(anchor="w", pady=2)

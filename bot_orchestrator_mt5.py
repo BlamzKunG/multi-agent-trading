@@ -80,7 +80,7 @@ class MT5TradingBotOrchestrator:
                 "daily_profit_target": 100.0,
                 "daily_loss_limit": 30.0,
                 "reverse_mode": False,
-                "nohold_mode": True,
+                "hold_mode_enabled": False,
                 "risk_mode": "ATR",
                 "fixed_sl_points": 500,
                 "fixed_tp_points": 1000,
@@ -491,7 +491,8 @@ class MT5TradingBotOrchestrator:
                 df_5m_pa = self.agents._analyze_price_action(df_5m)
                 atr_5m = float(df_5m_pa['atr_14'].iloc[-1]) if not df_5m_pa.empty else 0.0
                 
-                nohold_mode = strat.get("nohold_mode", True)
+                hold_mode_enabled = strat.get("hold_mode_enabled", False)
+                nohold_mode = not hold_mode_enabled
                 
                 decision = self.agents.analyze_custom_agent(
                     df_5m=df_5m,
