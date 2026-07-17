@@ -370,14 +370,36 @@ class TradingBotGUI:
             )
         )
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # ป้องกันไม่ให้วิดเจ็ตเบียดและทำให้ canvas เสียรูป
-        canvas.bind('<Configure>', lambda event: canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width))
+        # ปรับความกว้างของ scrollable_frame ให้เต็มขนาด canvas เสมอเพื่อความสมมาตร
+        canvas.bind('<Configure>', lambda event: canvas.itemconfig(window_id, width=event.width))
+        
+        # ผูกระบบเลื่อนลูกกลิ้งเมาส์ (Mousewheel) ให้รองรับระบบ Linux (X11) และ Windows/macOS
+        def _on_mousewheel(event):
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+            else:
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+                
+        def _bind_mouse(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", _on_mousewheel)
+            canvas.bind_all("<Button-5>", _on_mousewheel)
+            
+        def _unbind_mouse(event):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+            
+        canvas.bind("<Enter>", _bind_mouse)
+        canvas.bind("<Leave>", _unbind_mouse)
         
         return scrollable_frame
 
