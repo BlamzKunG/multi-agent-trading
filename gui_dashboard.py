@@ -228,9 +228,13 @@ class TradingBotGUI:
         lbl_head = tk.Label(self.left_panel, text="⚙️ Multi-Agent Dashboard Config", font=("Outfit", 12, "bold"), bg="#1e293b", fg="#f8fafc")
         lbl_head.pack(anchor="w", pady=(0, 10))
         
-        # สร้าง Notebook ในฝั่งซ้ายเพื่อแยกหน้าการตั้งค่า
+        # สวิตช์และปุ่มควบคุมระบบออโต้/แมนนวล ด้านล่างของ Left Panel (แพ็กลงด้านล่างก่อนเพื่อให้คงอยู่เสมอ)
+        control_frame = tk.LabelFrame(self.left_panel, text="🚦 Control Room", bg="#1e293b", fg="#fbbf24", font=self.font_label, padx=10, pady=5)
+        control_frame.pack(side="bottom", fill="x", pady=5)
+
+        # สร้าง Notebook ในฝั่งซ้ายเพื่อแยกหน้าการตั้งค่า (แพ็กส่วนบนหลังจากนั้นเพื่อเติมช่องว่างที่เหลือ)
         self.config_tabs = ttk.Notebook(self.left_panel)
-        self.config_tabs.pack(fill="both", expand=True, pady=(0, 10))
+        self.config_tabs.pack(side="top", fill="both", expand=True, pady=(0, 10))
         
         # 1. แท็บตั้งค่าระบบส่วนกลาง (Global Setup)
         self.tab_global = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
@@ -261,10 +265,6 @@ class TradingBotGUI:
         self.tab_custom = tk.Frame(self.config_tabs, bg="#1e293b", padx=10, pady=10)
         self.config_tabs.add(self.tab_custom, text=" 🧠 Custom Agent ")
         self.setup_custom_agent_tab(self.tab_custom)
-        
-        # สวิตช์และปุ่มควบคุมระบบออโต้/แมนนวล ด้านล่างของ Left Panel
-        control_frame = tk.LabelFrame(self.left_panel, text="🚦 Control Room", bg="#1e293b", fg="#fbbf24", font=self.font_label, padx=10, pady=5)
-        control_frame.pack(fill="x", pady=5)
         
         self.chk_auto = tk.Checkbutton(control_frame, text="🟢 เปิดระบบ Auto-Pilot รันรอบอัตโนมัติ", variable=self.var_auto_pilot, font=self.font_label, bg="#1e293b", fg="#818cf8", selectcolor="#0f172a", command=self.on_auto_pilot_toggle)
         self.chk_auto.pack(anchor="w", pady=3)
@@ -357,57 +357,8 @@ class TradingBotGUI:
         self.log_text.tag_config('info', foreground="#f8fafc")
         self.log_text.configure(state='disabled')
         
-    def setup_global_tab(self):
-        # 1. ปรับโหมดการทำงาน
-        tk.Label(self.tab_global, text="Trading Mode (โหมดเทรด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
-        self.cb_mode = ttk.Combobox(self.tab_global, textvariable=self.var_mode, values=["Simulation", "MT5 Live"], state="readonly")
-        self.cb_mode.pack(fill="x", pady=(0, 10))
-        self.cb_mode.bind("<<ComboboxSelected>>", self.on_mode_change)
-        
-        # 2. ช่องใส่ API Key
-        tk.Label(self.tab_global, text="MaxPlus API Key", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
-        self.ent_api_key = tk.Entry(self.tab_global, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=3)
-        self.ent_api_key.pack(fill="x", pady=(0, 10))
-        
-        # 3. รายละเอียด MT5
-        self.frame_mt5 = tk.LabelFrame(self.tab_global, text="⚙️ ตั้งค่า MetaTrader 5 Login", font=self.font_label, bg="#1e293b", fg="#fbbf24", padx=10, pady=5, relief="solid", bd=1)
-        self.frame_mt5.pack(fill="x", pady=(0, 10))
-        
-        tk.Label(self.frame_mt5, text="Login ID (หมายเลขบัญชี)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_mt5_login = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
-        self.ent_mt5_login.pack(fill="x", pady=(1, 5))
-        
-        tk.Label(self.frame_mt5, text="Password (รหัสผ่าน)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_mt5_pass = tk.Entry(self.frame_mt5, show="*", bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
-        self.ent_mt5_pass.pack(fill="x", pady=(1, 5))
-        
-        tk.Label(self.frame_mt5, text="Server (เซิร์ฟเวอร์โบรกเกอร์)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
-        self.ent_mt5_server = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
-        self.ent_mt5_server.pack(fill="x", pady=(1, 5))
-        
-        # 4. เลือกโมเดลสำหรับ Analyst และ Manager
-        tk.Label(self.tab_global, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
-        self.cb_analysis_model = ttk.Combobox(self.tab_global, textvariable=self.var_analysis_model, values=[
-            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
-            "claude-haiku-4-5 (Native: $0.25/1M)",
-            "claude-sonnet-4-6 (Native: $3.00/1M)",
-            "claude-sonnet-5 (Native: $3.00/1M)",
-            "claude-opus-4-6",
-            "claude-opus-4-7",
-            "claude-opus-4-8 (Native: $15.00/1M)"
-        ], state="readonly")
-        self.cb_analysis_model.pack(fill="x", pady=(0, 10))
-        
-        tk.Label(self.tab_global, text="Manager Model (โมเดลควบคุมพอร์ต)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
-        self.cb_management_model = ttk.Combobox(self.tab_global, textvariable=self.var_management_model, values=[
-            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
-            "claude-haiku-4-5",
-            "claude-sonnet-4-5"
-        ], state="readonly")
-        self.cb_management_model.pack(fill="x", pady=(0, 10))
-
-    def setup_custom_agent_tab(self, parent_frame):
-        # สร้าง Canvas และ Scrollbar เพื่อรองรับการสกรอลล์แนวดิ่งเนื่องจากตัวแปรมีปริมาณมาก
+    def create_scrollable_container(self, parent_frame):
+        # สร้าง Canvas และ Scrollbar เพื่อรองรับการสกรอลล์แนวดิ่ง
         canvas = tk.Canvas(parent_frame, bg="#1e293b", highlightthickness=0)
         scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg="#1e293b")
@@ -425,6 +376,65 @@ class TradingBotGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
+        # ป้องกันไม่ให้วิดเจ็ตเบียดและทำให้ canvas เสียรูป
+        canvas.bind('<Configure>', lambda event: canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width))
+        
+        return scrollable_frame
+
+    def setup_global_tab(self):
+        # สร้างคอนเทนเนอร์สกรอลล์เพื่อรองรับหน้าจอกว้าง-ต่ำ
+        scrollable_frame = self.create_scrollable_container(self.tab_global)
+
+        # 1. ปรับโหมดการทำงาน
+        tk.Label(scrollable_frame, text="Trading Mode (โหมดเทรด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.cb_mode = ttk.Combobox(scrollable_frame, textvariable=self.var_mode, values=["Simulation", "MT5 Live"], state="readonly")
+        self.cb_mode.pack(fill="x", pady=(0, 10))
+        self.cb_mode.bind("<<ComboboxSelected>>", self.on_mode_change)
+        
+        # 2. ช่องใส่ API Key
+        tk.Label(scrollable_frame, text="MaxPlus API Key", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.ent_api_key = tk.Entry(scrollable_frame, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=3)
+        self.ent_api_key.pack(fill="x", pady=(0, 10))
+        
+        # 3. รายละเอียด MT5
+        self.frame_mt5 = tk.LabelFrame(scrollable_frame, text="⚙️ ตั้งค่า MetaTrader 5 Login", font=self.font_label, bg="#1e293b", fg="#fbbf24", padx=10, pady=5, relief="solid", bd=1)
+        self.frame_mt5.pack(fill="x", pady=(0, 10))
+        
+        tk.Label(self.frame_mt5, text="Login ID (หมายเลขบัญชี)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.ent_mt5_login = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        self.ent_mt5_login.pack(fill="x", pady=(1, 5))
+        
+        tk.Label(self.frame_mt5, text="Password (รหัสผ่าน)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.ent_mt5_pass = tk.Entry(self.frame_mt5, show="*", bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        self.ent_mt5_pass.pack(fill="x", pady=(1, 5))
+        
+        tk.Label(self.frame_mt5, text="Server (เซิร์ฟเวอร์โบรกเกอร์)", font=("Outfit", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+        self.ent_mt5_server = tk.Entry(self.frame_mt5, bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        self.ent_mt5_server.pack(fill="x", pady=(1, 5))
+        
+        # 4. เลือกโมเดลสำหรับ Analyst และ Manager
+        tk.Label(scrollable_frame, text="Analyst Model (โมเดลวิเคราะห์ตลาด)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.cb_analysis_model = ttk.Combobox(scrollable_frame, textvariable=self.var_analysis_model, values=[
+            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
+            "claude-haiku-4-5 (Native: $0.25/1M)",
+            "claude-sonnet-4-6 (Native: $3.00/1M)",
+            "claude-sonnet-5 (Native: $3.00/1M)",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8 (Native: $15.00/1M)"
+        ], state="readonly")
+        self.cb_analysis_model.pack(fill="x", pady=(0, 10))
+        
+        tk.Label(scrollable_frame, text="Manager Model (โมเดลควบคุมพอร์ต)", font=self.font_label, bg="#1e293b", fg="#94a3b8").pack(anchor="w", pady=(5, 2))
+        self.cb_management_model = ttk.Combobox(scrollable_frame, textvariable=self.var_management_model, values=[
+            "claude-haiku-4-5-20251001 (Native: $0.25/1M)",
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5"
+        ], state="readonly")
+        self.cb_management_model.pack(fill="x", pady=(0, 10))
+
+    def setup_custom_agent_tab(self, parent_frame):
+        scrollable_frame = self.create_scrollable_container(parent_frame)
         vars_dict = self.strat_vars["custom_agent"]
         
         # 1. General Config Group
@@ -500,57 +510,58 @@ class TradingBotGUI:
         chk_rv.pack(anchor="w", pady=2)
 
     def setup_strategy_tab(self, parent_frame, strat_name):
+        scrollable_frame = self.create_scrollable_container(parent_frame)
         vars_dict = self.strat_vars[strat_name]
         
-        # บังคับจัดกริด
-        parent_frame.columnconfigure(0, weight=1)
-        parent_frame.columnconfigure(1, weight=1)
+        # บังคับจัดกริดบน scrollable_frame
+        scrollable_frame.columnconfigure(0, weight=1)
+        scrollable_frame.columnconfigure(1, weight=1)
         
         # Row 0: Enabled/Disabled Strategy
-        chk_enable = tk.Checkbutton(parent_frame, text="เปิดใช้งานกลยุทธ์นี้", variable=vars_dict["enabled"], font=("Outfit", 9, "bold"), bg="#1e293b", fg="#10b981", selectcolor="#0f172a")
+        chk_enable = tk.Checkbutton(scrollable_frame, text="เปิดใช้งานกลยุทธ์นี้", variable=vars_dict["enabled"], font=("Outfit", 9, "bold"), bg="#1e293b", fg="#10b981", selectcolor="#0f172a")
         chk_enable.grid(row=0, column=0, columnspan=2, sticky="w", pady=(5, 10))
         
         # Row 1: Magic Number
-        tk.Label(parent_frame, text="Magic Number", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=1, column=0, sticky="w", pady=3)
-        ent_magic = tk.Entry(parent_frame, textvariable=vars_dict["magic"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        tk.Label(scrollable_frame, text="Magic Number", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=1, column=0, sticky="w", pady=3)
+        ent_magic = tk.Entry(scrollable_frame, textvariable=vars_dict["magic"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
         ent_magic.grid(row=1, column=1, sticky="ew", pady=3)
         
         # Row 2: Max Lot
-        tk.Label(parent_frame, text="Max Lot Size", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=2, column=0, sticky="w", pady=3)
-        ent_max_lot = tk.Entry(parent_frame, textvariable=vars_dict["max_lot"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        tk.Label(scrollable_frame, text="Max Lot Size", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=2, column=0, sticky="w", pady=3)
+        ent_max_lot = tk.Entry(scrollable_frame, textvariable=vars_dict["max_lot"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
         ent_max_lot.grid(row=2, column=1, sticky="ew", pady=3)
         
         # Row 3: Run Cycle Interval (Minutes)
-        tk.Label(parent_frame, text="Run Interval (นาที)", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=3, column=0, sticky="w", pady=3)
-        ent_interval = tk.Entry(parent_frame, textvariable=vars_dict["interval"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        tk.Label(scrollable_frame, text="Run Interval (นาที)", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=3, column=0, sticky="w", pady=3)
+        ent_interval = tk.Entry(scrollable_frame, textvariable=vars_dict["interval"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
         ent_interval.grid(row=3, column=1, sticky="ew", pady=3)
         
         # แผงหัวข้อย่อย Trailing Config
-        lbl_trailing_sec = tk.Label(parent_frame, text="🛡️ การตั้งค่า Trailing Stop", font=("Outfit", 9, "bold"), bg="#1e293b", fg="#fbbf24")
+        lbl_trailing_sec = tk.Label(scrollable_frame, text="🛡️ การตั้งค่า Trailing Stop", font=("Outfit", 9, "bold"), bg="#1e293b", fg="#fbbf24")
         lbl_trailing_sec.grid(row=4, column=0, columnspan=2, sticky="w", pady=(15, 5))
         
         # Row 5: Trailing Enabled
-        chk_trail = tk.Checkbutton(parent_frame, text="เปิดใช้ ATR Trailing Stop", variable=vars_dict["trailing_enabled"], font=self.font_label, bg="#1e293b", fg="#fbbf24", selectcolor="#0f172a")
+        chk_trail = tk.Checkbutton(scrollable_frame, text="เปิดใช้ ATR Trailing Stop", variable=vars_dict["trailing_enabled"], font=self.font_label, bg="#1e293b", fg="#fbbf24", selectcolor="#0f172a")
         chk_trail.grid(row=5, column=0, columnspan=2, sticky="w", pady=3)
         
         # Row 6: ATR Timeframe
-        tk.Label(parent_frame, text="ATR Timeframe", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=6, column=0, sticky="w", pady=3)
-        cb_atr_tf = ttk.Combobox(parent_frame, textvariable=vars_dict["trailing_atr_tf"], values=["1m", "5m", "15m", "1h"], state="readonly")
+        tk.Label(scrollable_frame, text="ATR Timeframe", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=6, column=0, sticky="w", pady=3)
+        cb_atr_tf = ttk.Combobox(scrollable_frame, textvariable=vars_dict["trailing_atr_tf"], values=["1m", "5m", "15m", "1h"], state="readonly")
         cb_atr_tf.grid(row=6, column=1, sticky="ew", pady=3)
         
         # Row 7: Activation Mult
-        tk.Label(parent_frame, text="Activation Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=7, column=0, sticky="w", pady=3)
-        ent_act_mult = tk.Entry(parent_frame, textvariable=vars_dict["trailing_activation_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        tk.Label(scrollable_frame, text="Activation Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=7, column=0, sticky="w", pady=3)
+        ent_act_mult = tk.Entry(scrollable_frame, textvariable=vars_dict["trailing_activation_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
         ent_act_mult.grid(row=7, column=1, sticky="ew", pady=3)
         
         # Row 8: Distance Mult
-        tk.Label(parent_frame, text="Distance Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=8, column=0, sticky="w", pady=3)
-        ent_dist_mult = tk.Entry(parent_frame, textvariable=vars_dict["trailing_distance_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        tk.Label(scrollable_frame, text="Distance Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=8, column=0, sticky="w", pady=3)
+        ent_dist_mult = tk.Entry(scrollable_frame, textvariable=vars_dict["trailing_distance_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
         ent_dist_mult.grid(row=8, column=1, sticky="ew", pady=3)
         
         # Row 9: Step Mult
-        tk.Label(parent_frame, text="Step Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=9, column=0, sticky="w", pady=3)
-        ent_step_mult = tk.Entry(parent_frame, textvariable=vars_dict["trailing_step_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
+        tk.Label(scrollable_frame, text="Step Mult", font=self.font_label, bg="#1e293b", fg="#94a3b8").grid(row=9, column=0, sticky="w", pady=3)
+        ent_step_mult = tk.Entry(scrollable_frame, textvariable=vars_dict["trailing_step_mult"], bg="#0f172a", fg="#f8fafc", insertbackground="white", relief="flat", bd=2)
         ent_step_mult.grid(row=9, column=1, sticky="ew", pady=3)
 
     def create_metric_card(self, parent, title, initial_value, num_color):
