@@ -86,6 +86,8 @@ class TradingBotOrchestrator:
                 "risk_mode": "ATR",
                 "fixed_sl_points": 500,
                 "fixed_tp_points": 1000,
+                "daily_quota_enabled": True,
+                "quick_close_enabled": True,
                 "next_run_time": 0
             }
         }
@@ -268,7 +270,7 @@ class TradingBotOrchestrator:
                 return
                 
             # ดำเนินการเช็คยอดเป้าหมายรายวัน (Daily Quota check) เฉพาะ Custom Agent ในระบบจำลอง
-            if strategy_name == "custom_agent":
+            if strategy_name == "custom_agent" and strat.get("daily_quota_enabled", True):
                 closed_trades = self.exchange.get_trade_history(self.symbol, magic=magic_number)
                 import datetime
                 today_str = datetime.datetime.now().strftime("%Y-%m-%d")

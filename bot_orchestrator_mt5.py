@@ -84,6 +84,8 @@ class MT5TradingBotOrchestrator:
                 "risk_mode": "ATR",
                 "fixed_sl_points": 500,
                 "fixed_tp_points": 1000,
+                "daily_quota_enabled": True,
+                "quick_close_enabled": True,
                 "next_run_time": 0
             }
         }
@@ -355,7 +357,7 @@ class MT5TradingBotOrchestrator:
                 return
                 
             # ดำเนินการเช็คยอดเป้าหมายรายวัน (Daily Quota check) เฉพาะ Custom Agent
-            if strategy_name == "custom_agent":
+            if strategy_name == "custom_agent" and strat.get("daily_quota_enabled", True):
                 closed_trades = self.mt5_bridge.get_trade_history(symbol=self.symbol, days=1, magic=magic_number)
                 import datetime
                 today_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -583,7 +585,7 @@ class MT5TradingBotOrchestrator:
         """จัดการการเลื่อน trailing stop, breakeven และเป้ารวบล็อกกำไร"""
         # 1. เช็คเป้ารวบล็อกกำไร (Quick Profit Close) ทุกๆ 10 วินาที
         quick_close = float(strat.get("quick_close_profit", 0.0) or 0.0)
-        if quick_close > 0.0:
+        if quick_close > 0.0 and strat.get("quick_close_enabled", True):
             total_float_pnl = sum(float(pos.get("pnl", 0.0)) for pos in open_positions)
             if total_float_pnl >= quick_close:
                 logging.info(f"💰 [{strategy_name.upper()}] กำไรรวมของออเดอร์ลอยตัว (${total_float_pnl:.2f}) ถึงเป้า Quick Close (${quick_close:.2f}) -> สั่งปิดทุกไม้ทันที!")

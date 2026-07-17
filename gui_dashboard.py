@@ -193,6 +193,8 @@ class TradingBotGUI:
                 "quick_close_profit": tk.StringVar(value="9.0"),
                 "daily_profit_target": tk.StringVar(value="100.0"),
                 "daily_loss_limit": tk.StringVar(value="30.0"),
+                "daily_quota_enabled": tk.BooleanVar(value=True),
+                "quick_close_enabled": tk.BooleanVar(value=True),
                 "reverse_mode": tk.BooleanVar(value=False),
                 "nohold_mode": tk.BooleanVar(value=True),
                 "risk_mode": tk.StringVar(value="ATR"),
@@ -458,6 +460,8 @@ class TradingBotGUI:
         # 3. Targets Quotas
         f_target = tk.LabelFrame(scrollable_frame, text="💰 Daily Quota Targets", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
         f_target.pack(fill="x", pady=5, padx=5)
+        chk_dq = tk.Checkbutton(f_target, text="เปิดใช้การคุมวงเงินรายวัน (Daily Quota)", variable=vars_dict["daily_quota_enabled"], font=self.font_label, bg="#1e293b", fg="#10b981", selectcolor="#0f172a")
+        chk_dq.pack(anchor="w", pady=2)
         add_row(f_target, "Daily Profit Target ($)", vars_dict["daily_profit_target"])
         add_row(f_target, "Daily Loss Limit ($)", vars_dict["daily_loss_limit"])
         
@@ -468,6 +472,9 @@ class TradingBotGUI:
         chk_be = tk.Checkbutton(f_auto, text="เปิดใช้ Breakeven (กันทุน)", variable=vars_dict["breakeven_enabled"], font=self.font_label, bg="#1e293b", fg="#3b82f6", selectcolor="#0f172a")
         chk_be.pack(anchor="w", pady=2)
         add_row(f_auto, "Breakeven ATR Mult", vars_dict["breakeven_atr_mult"])
+        
+        chk_qc = tk.Checkbutton(f_auto, text="เปิดใช้การรวบล็อกกำไรด่วน (Quick Close)", variable=vars_dict["quick_close_enabled"], font=self.font_label, bg="#1e293b", fg="#10b981", selectcolor="#0f172a")
+        chk_qc.pack(anchor="w", pady=2)
         add_row(f_auto, "Quick Close Profit ($)", vars_dict["quick_close_profit"])
         
         chk_tr = tk.Checkbutton(f_auto, text="เปิดใช้ ATR Trailing Stop", variable=vars_dict["trailing_enabled"], font=self.font_label, bg="#1e293b", fg="#fbbf24", selectcolor="#0f172a")
@@ -487,7 +494,7 @@ class TradingBotGUI:
         f_ai = tk.LabelFrame(scrollable_frame, text="🤖 AI Model Flags", bg="#1e293b", fg="#f8fafc", font=("Outfit", 9, "bold"), padx=8, pady=5)
         f_ai.pack(fill="x", pady=5, padx=5)
         
-        chk_nh = tk.Checkbutton(f_ai, text="เปิด NoHoldMode (ห้าม AI ตอบ HOLD)", variable=vars_dict["nohold_mode"], font=self.font_label, bg="#1e293b", fg="#a855f7", selectcolor="#0f172a")
+        chk_nh = tk.Checkbutton(f_ai, text="เปิด/ปิด NoHoldMode (เปิด = บังคับยิง BUY/SELL เท่านั้น | ปิด = ยอมให้มี HOLD)", variable=vars_dict["nohold_mode"], font=self.font_label, bg="#1e293b", fg="#a855f7", selectcolor="#0f172a")
         chk_nh.pack(anchor="w", pady=2)
         chk_rv = tk.Checkbutton(f_ai, text="เปิด Reverse Mode (สลับฝั่งสัญญาณ)", variable=vars_dict["reverse_mode"], font=self.font_label, bg="#1e293b", fg="#ec4899", selectcolor="#0f172a")
         chk_rv.pack(anchor="w", pady=2)
